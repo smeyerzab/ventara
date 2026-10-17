@@ -1,0 +1,1992 @@
+import React, { useState, useMemo } from "react";
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Initial-settings reference data, transcribed from the Ventara workbook.
+   Each device/mode is a tab; each column is a diagnosis × BMI band.
+   Values are STARTING REFERENCES ONLY — the clinician confirms every setting.
+─────────────────────────────────────────────────────────────────────────── */
+
+const BANDS = {
+  // diagnosis -> ordered list of { key, label, test(bmi) }
+  NMD: [
+    { key: "lt30", label: "BMI < 30", test: (b) => b < 30 },
+    { key: "ge30", label: "BMI ≥ 30", test: (b) => b >= 30 },
+  ],
+  COPD: [
+    { key: "lt30", label: "BMI < 30", test: (b) => b < 30 },
+    { key: "ge30", label: "BMI ≥ 30", test: (b) => b >= 30 },
+  ],
+  OHS: [
+    { key: "30to40", label: "BMI 30–40", test: (b) => b >= 30 && b <= 40 },
+    { key: "gt40", label: "BMI > 40", test: (b) => b > 40 },
+  ],
+};
+
+// Column order in every sheet: NMD<30, NMD≥30, COPD<30, COPD≥30, OHS30-40, OHS>40
+const COLS = [
+  { dx: "NMD", band: "lt30" },
+  { dx: "NMD", band: "ge30" },
+  { dx: "COPD", band: "lt30" },
+  { dx: "COPD", band: "ge30" },
+  { dx: "OHS", band: "30to40" },
+  { dx: "OHS", band: "gt40" },
+];
+
+// helper to turn a 6-tuple into a column-keyed object
+const row = (...v) => COLS.reduce((o, c, i) => ((o[c.dx + ":" + c.band] = v[i]), o), {});
+const VOL = "8 cc/kg IBW"; // marker replaced at runtime with computed mL
+
+const DEVICES = {
+  "ResMed AirCurve 10 ST-A — ST": {
+    volumeRow: null, // pure pressure mode: IBW is informational only
+    params: [
+      ["IPAP (cmH₂O)", row(8, 12, 16, 18, 18, 20)],
+      ["EPAP (cmH₂O)", row(4, 6, 4, 6, 6, 8)],
+      ["Respiratory Rate (bpm)", row(14, 14, 16, 16, 14, 14)],
+      ["Ti min (s)", row(1.2, 1.2, 0.9, 1.1, 1.2, 1.2)],
+      ["Ti max (s)", row(2, 2, 1.5, 1.5, 2, 2)],
+      ["Rise (ms)", row(300, 300, 200, 200, 300, 300)],
+      ["Trigger", row("High", "High", "Medium", "Medium", "Medium", "Medium")],
+      ["Cycle", row("Low", "Low", "High", "Medium", "Low", "Low")],
+    ],
+  },
+  "ResMed AirCurve 10 ST-A — iVAPS": {
+    volumeRow: "Target Va",
+    params: [
+      ["Target Va", row(VOL, VOL, VOL, VOL, VOL, VOL)],
+      ["EPAP (cmH₂O)", row(4, 6, 4, 6, 6, 8)],
+      ["PS min (cmH₂O)", row(4, 6, 10, 10, 10, 10)],
+      ["PS max (cmH₂O)", row(16, 18, 18, 18, 20, 22)],
+      ["Target Rate (bpm)", row(14, 14, 16, 16, 14, 14)],
+      ["Ti min (s)", row(1.2, 1.2, 0.9, 1.1, 1.2, 1.2)],
+      ["Ti max (s)", row(2, 2, 1.5, 1.6, 2, 2)],
+      ["Rise (ms)", row(300, 300, 200, 200, 300, 300)],
+      ["Trigger", row("High", "High", "Medium", "Medium", "Medium", "Medium")],
+      ["Cycle", row("Low", "Low", "High", "Medium", "Low", "Low")],
+    ],
+  },
+  "Breas Vivo 45 LS — VAPS-PS": {
+    volumeRow: "Tidal Volume",
+    params: [
+      ["Tidal Volume", row(VOL, VOL, VOL, VOL, VOL, VOL)],
+      ["EPAP (cmH₂O)", row(4, 6, 4, 6, 6, 8)],
+      ["Min Pressure (cmH₂O)", row(8, 10, 14, 16, 18, 20)],
+      ["Max Pressure (cmH₂O)", row(16, 18, 22, 24, 24, 26)],
+      ["Respiratory Rate (bpm)", row(14, 14, 16, 16, 14, 14)],
+      ["Backup Ti (s)", row(1.4, 1.4, 1.2, 1.2, 1.4, 1.4)],
+      ["Ti min (s)", row(1.2, 1.2, 0.9, 1.1, 1.2, 1.2)],
+      ["Ti max (s)", row(2, 2, 1.5, 1.5, 2, 2)],
+      ["Rise", row(4, 4, 2, 2, 3, 3)],
+      ["Inspiratory Trigger", row(2, 2, 4, 4, 4, 4)],
+      ["Expiratory Trigger", row(7, 7, 6, 6, 7, 7)],
+    ],
+  },
+  "Breas Vivo 45 LS — VAPS-PS-AE": {
+    volumeRow: "Tidal Volume",
+    params: [
+      ["Tidal Volume", row(VOL, VOL, VOL, VOL, VOL, VOL)],
+      ["EPAP min (cmH₂O)", row(4, 6, 4, 6, 6, 8)],
+      ["EPAP max (cmH₂O)", row(8, 10, 8, 10, 12, 14)],
+      ["PS min (cmH₂O)", row(4, 4, 10, 10, 10, 10)],
+      ["PS max (cmH₂O)", row(10, 10, 18, 18, 18, 20)],
+      ["Respiratory Rate (bpm)", row(14, 14, 16, 16, 14, 14)],
+      ["Backup Insp Time (s)", row(1.4, 1.4, 1.2, 1.2, 1.4, 1.4)],
+      ["Ti min (s)", row(1.2, 1.2, 0.9, 1.1, 1.2, 1.2)],
+      ["Ti max (s)", row(2, 2, 1.5, 1.5, 2, 2)],
+      ["Rise", row(4, 4, 2, 2, 3, 3)],
+      ["Inspiratory Trigger", row(2, 2, 4, 4, 4, 4)],
+      ["Expiratory Trigger", row(7, 7, 6, 6, 7, 7)],
+    ],
+  },
+  "Philips Trilogy EVO — VAPS-PS": {
+    volumeRow: "Tidal Volume",
+    params: [
+      ["Tidal Volume", row(VOL, VOL, VOL, VOL, VOL, VOL)],
+      ["EPAP (cmH₂O)", row(4, 6, 4, 6, 6, 8)],
+      ["IPAP min (cmH₂O)", row(8, 10, 14, 16, 18, 20)],
+      ["IPAP max (cmH₂O)", row(16, 18, 22, 24, 24, 26)],
+      ["Respiratory Rate (bpm)", row(14, 14, 16, 16, 14, 14)],
+      ["Inspiratory Time (s)", row(1.4, 1.4, 1.2, 1.2, 1.4, 1.4)],
+      ["Ti min (s)", row(1.2, 1.2, 0.9, 1.1, 1.2, 1.2)],
+      ["Ti max (s)", row(2, 2, 1.5, 1.5, 2, 2)],
+      ["Rise", row(3, 3, 2, 2, 3, 3)],
+      ["Trigger Sensitivity", row(2, 2, 4, 4, 4, 4)],
+      ["Cycle Sensitivity", row(20, 20, 30, 30, 20, 20)],
+    ],
+  },
+};
+
+const DX_LABEL = {
+  NMD: "Neuromuscular disease",
+  COPD: "COPD",
+  OHS: "Obesity hypoventilation (OHS)",
+};
+
+/* ── IBW: Devine formula. Height in inches; returns kg. ─────────────────── */
+function ibwKg(sex, heightIn) {
+  const base = sex === "female" ? 45.5 : 50;
+  return base + 2.3 * (heightIn - 60);
+}
+
+const C = {
+  ink: "#13202b",
+  sub: "#5c6b73",
+  line: "#dde3e1",
+  bg: "#f6f4ee",
+  panel: "#ffffff",
+  teal: "#0f6e6e",
+  tealSoft: "#e6f0ee",
+  amber: "#9a6a00",
+  amberSoft: "#fbf2dd",
+  vol: "#0a5b5b",
+};
+
+export default function VentaraSettings() {
+  const [sex, setSex] = useState("");
+  const [ft, setFt] = useState("");
+  const [inch, setInch] = useState("");
+  const [bmi, setBmi] = useState("");
+  const [dx, setDx] = useState("");
+  const [device, setDevice] = useState("");
+
+  const heightIn = useMemo(() => {
+    const f = parseFloat(ft), i = parseFloat(inch);
+    if (isNaN(f) && isNaN(i)) return NaN;
+    return (isNaN(f) ? 0 : f) * 12 + (isNaN(i) ? 0 : i);
+  }, [ft, inch]);
+
+  const bmiNum = parseFloat(bmi);
+
+  const band = useMemo(() => {
+    if (!dx || isNaN(bmiNum)) return null;
+    return BANDS[dx].find((b) => b.test(bmiNum)) || null;
+  }, [dx, bmiNum]);
+
+  // OHS requires BMI ≥ 30 by definition; flag if not met
+  const ohsMismatch = dx === "OHS" && !isNaN(bmiNum) && bmiNum < 30;
+
+  const ibw = useMemo(
+    () => (sex && !isNaN(heightIn) && heightIn > 0 ? ibwKg(sex, heightIn) : NaN),
+    [sex, heightIn]
+  );
+  const targetMl = isNaN(ibw) ? NaN : Math.round(ibw * 8);
+
+  const ready = sex && !isNaN(heightIn) && heightIn > 0 && dx && band && device && !ohsMismatch;
+
+  const result = useMemo(() => {
+    if (!ready) return null;
+    const colKey = dx + ":" + band.key;
+    const dev = DEVICES[device];
+    return dev.params.map(([name, vals]) => {
+      let v = vals[colKey];
+      if (v === VOL && !isNaN(targetMl)) {
+        v = `${targetMl} mL`;
+      }
+      return { name, value: v, isVolume: name === dev.volumeRow };
+    });
+  }, [ready, dx, band, device, targetMl]);
+
+  const field = {
+    width: "100%", padding: "11px 12px", fontSize: 15, color: C.ink,
+    border: `1px solid ${C.line}`, borderRadius: 8, background: "#fff",
+    fontFamily: "inherit", boxSizing: "border-box", appearance: "none",
+  };
+  const label = { fontSize: 12.5, fontWeight: 600, color: C.sub, letterSpacing: ".02em", marginBottom: 6, display: "block" };
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, padding: "0 16px 64px",
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif", color: C.ink }}>
+      <style>{`@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
+
+      <div style={{ maxWidth: 920, margin: "0 auto" }}>
+        {/* Header */}
+        <header style={{ padding: "40px 0 22px", borderBottom: `2px solid ${C.ink}`, marginBottom: 26 }}>
+          <div style={{ fontSize: 12, letterSpacing: ".18em", color: C.teal, fontWeight: 700, textTransform: "uppercase" }}>
+            Ventara · Companion
+          </div>
+          <h1 style={{ margin: "8px 0 6px", fontSize: 30, fontWeight: 800, letterSpacing: "-.02em" }}>
+            Home Ventilator Initial Settings
+          </h1>
+          <p style={{ margin: 0, fontSize: 15, color: C.sub, maxWidth: 560, lineHeight: 1.5 }}>
+            Starting-reference parameters for volume-targeted home ventilation, organized by diagnosis,
+            BMI band, and device mode.
+          </p>
+        </header>
+
+        {/* Disclaimer */}
+        <div style={{ background: C.amberSoft, border: `1px solid #ecd9a8`, borderRadius: 10,
+          padding: "13px 16px", marginBottom: 26, fontSize: 13.5, color: C.amber, lineHeight: 1.5 }}>
+          <strong>Educational reference only.</strong> These are suggested starting points, not prescriptions.
+          A qualified clinician must review, confirm, and adjust every setting for the individual patient,
+          then titrate to ventilation, oxygenation, comfort, and synchrony.
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 340px) 1fr", gap: 28, alignItems: "start" }}>
+          {/* ── Inputs ───────────────────────────────────────────── */}
+          <section style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14,
+            padding: 22, position: "sticky", top: 16 }}>
+            <h2 style={{ margin: "0 0 18px", fontSize: 15, fontWeight: 700 }}>Patient & device</h2>
+
+            <div style={{ marginBottom: 16 }}>
+              <span style={label}>Sex (for IBW)</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                {["male", "female"].map((s) => (
+                  <button key={s} onClick={() => setSex(s)}
+                    style={{ flex: 1, padding: "10px 0", fontSize: 14, fontWeight: 600, cursor: "pointer",
+                      textTransform: "capitalize", borderRadius: 8, fontFamily: "inherit",
+                      border: `1px solid ${sex === s ? C.teal : C.line}`,
+                      background: sex === s ? C.teal : "#fff", color: sex === s ? "#fff" : C.ink }}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <span style={label}>Height</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <input type="number" value={ft} onChange={(e) => setFt(e.target.value)} placeholder="5"
+                    style={field} min="0" />
+                  <span style={{ position: "absolute", right: 12, top: 12, fontSize: 13, color: C.sub }}>ft</span>
+                </div>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <input type="number" value={inch} onChange={(e) => setInch(e.target.value)} placeholder="9"
+                    style={field} min="0" max="11" />
+                  <span style={{ position: "absolute", right: 12, top: 12, fontSize: 13, color: C.sub }}>in</span>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <span style={label}>BMI</span>
+              <input type="number" value={bmi} onChange={(e) => setBmi(e.target.value)} placeholder="e.g. 28"
+                style={field} min="0" step="0.1" />
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <span style={label}>Primary diagnosis</span>
+              <select value={dx} onChange={(e) => setDx(e.target.value)} style={field}>
+                <option value="">Select…</option>
+                {Object.keys(DX_LABEL).map((k) => <option key={k} value={k}>{DX_LABEL[k]}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <span style={label}>Device & mode</span>
+              <select value={device} onChange={(e) => setDevice(e.target.value)} style={field}>
+                <option value="">Select…</option>
+                {Object.keys(DEVICES).map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </div>
+          </section>
+
+          {/* ── Output ───────────────────────────────────────────── */}
+          <section>
+            {/* IBW strip */}
+            {!isNaN(ibw) && (
+              <div style={{ display: "flex", gap: 0, background: C.tealSoft, border: `1px solid #c9e0db`,
+                borderRadius: 12, overflow: "hidden", marginBottom: 18 }}>
+                <Stat label="Height" value={`${heightIn}″`} />
+                <Stat label="Ideal body weight" value={`${ibw.toFixed(1)} kg`}
+                  sub="Devine formula" divider />
+                <Stat label="Target volume · 8 mL/kg" value={`${targetMl} mL`} strong divider />
+              </div>
+            )}
+
+            {ohsMismatch && (
+              <div style={{ background: "#fbe9e6", border: "1px solid #e8c4bd", borderRadius: 10,
+                padding: "12px 15px", marginBottom: 16, fontSize: 13.5, color: "#8a3a2c", lineHeight: 1.5 }}>
+                OHS is defined by obesity (BMI ≥ 30). The BMI entered is below 30 — recheck the diagnosis
+                or the BMI value before reading settings.
+              </div>
+            )}
+
+            {result ? (
+              <div style={{ animation: "fade .25s ease", background: C.panel, border: `1px solid ${C.line}`,
+                borderRadius: 14, overflow: "hidden" }}>
+                <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.line}` }}>
+                  <div style={{ fontSize: 12, letterSpacing: ".12em", color: C.teal, fontWeight: 700, textTransform: "uppercase" }}>
+                    {device}
+                  </div>
+                  <div style={{ fontSize: 15, color: C.sub, marginTop: 3 }}>
+                    {DX_LABEL[dx]} · {band.label}
+                  </div>
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14.5 }}>
+                  <tbody>
+                    {result.map((r, i) => (
+                      <tr key={r.name} style={{ background: r.isVolume ? C.tealSoft : i % 2 ? "#fafbfa" : "#fff" }}>
+                        <td style={{ padding: "11px 20px", color: C.ink, borderBottom: `1px solid ${C.line}`,
+                          fontWeight: r.isVolume ? 700 : 500 }}>
+                          {r.name}
+                        </td>
+                        <td style={{ padding: "11px 20px", textAlign: "right", borderBottom: `1px solid ${C.line}`,
+                          fontWeight: 700, fontVariantNumeric: "tabular-nums",
+                          color: r.isVolume ? C.vol : C.ink, whiteSpace: "nowrap" }}>
+                          {r.value}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ padding: "12px 20px", fontSize: 12.5, color: C.sub, lineHeight: 1.5 }}>
+                  Confirm against the device manual. Titrate to overnight CO₂, SpO₂, comfort, and
+                  patient–ventilator synchrony. Reassess after the first night.
+                </div>
+              </div>
+            ) : (
+              <div style={{ border: `1px dashed ${C.line}`, borderRadius: 14, padding: "48px 24px",
+                textAlign: "center", color: C.sub, fontSize: 14.5, background: "#fff" }}>
+                Enter sex, height, BMI, diagnosis, and device to see starting settings.
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, sub, strong, divider }) {
+  return (
+    <div style={{ flex: 1, padding: "12px 16px", borderLeft: divider ? "1px solid #c9e0db" : "none" }}>
+      <div style={{ fontSize: 11.5, color: "#3f6b66", fontWeight: 600, letterSpacing: ".03em", textTransform: "uppercase" }}>
+        {label}
+      </div>
+      <div style={{ fontSize: strong ? 22 : 19, fontWeight: 800, color: strong ? "#0a5b5b" : "#13202b",
+        marginTop: 2, fontVariantNumeric: "tabular-nums" }}>
+        {value}
+      </div>
+      {sub && <div style={{ fontSize: 11.5, color: "#3f6b66", marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+
+
+
+
+import React, { useState, useMemo } from "react";
+
+/* ============================================================================
+   VENTARA — Cross-Mode Translator (v14, iteration 1)
+   Scope of this iteration:
+     SOURCE: generic ST  or  generic PCV   (fixed bilevel / inpatient bipap)
+     TARGET: VAPS-AE PS  on ResMed Astral  (volume-targeted, auto-EPAP)
+
+   Design intent: this is a clinical decision-support tool, not a calculator.
+   Every output value declares HOW it was derived via a badge, and ambiguous
+   clinical-judgment fields are forced to yellow (review/default) rather than
+   being laundered into confident-looking numbers.
+   ============================================================================ */
+
+/* ---- Badge taxonomy -------------------------------------------------------
+   direct      green   value carried 1:1 from a real source field
+   calculated  purple  deterministic math from source inputs
+   ordinal     blue    closest step on a device's ordinal scale
+   default     yellow  no source equivalent — a starting bound was supplied
+   review      yellow  clinical judgment required before use
+   --------------------------------------------------------------------------- */
+const BADGE = {
+  direct:     { label: "direct",      cls: "b-direct" },
+  calculated: { label: "calculated",  cls: "b-calc" },
+  ordinal:    { label: "closest step",cls: "b-ord" },
+  default:    { label: "default ⚠",   cls: "b-default" },
+  review:     { label: "review ⚠",    cls: "b-review" },
+};
+
+/* ---- Clinical translation primitives ------------------------------------- */
+
+// Vt (mL) -> Target Va (L/min), using the rate the volume was produced at.
+// Va = (Vt - deadspace) * rate / 1000
+const vtToVa = (vt, rate, deadspace = 150) =>
+  ((vt - deadspace) * rate) / 1000;
+
+// Ti from rate assuming 1:2 I:E, then min/max window.
+const tiFromRate = (rate) => 60 / rate / 3;
+
+// Rise: ResMed devices accept direct ms. Source ordinal -> ms is a v13 concern;
+// for generic sources we accept ms directly and pass through.
+// Trigger/Cycle: translate through L/min and % respectively (v13 layer).
+
+/* ---- The transition engine ------------------------------------------------
+   Given source inputs, produce an ordered list of target rows. Each row is
+   { param, value, unit, badge, why } where `why` feeds the calc box / notes.
+   --------------------------------------------------------------------------- */
+function translate(src) {
+  const rows = [];
+  const calc = [];
+  const notes = [];
+
+  const rate = Number(src.rr);
+  const ipap = Number(src.ipap);
+  const epap = Number(src.epap);
+  const vt = Number(src.vt);
+  const isPCV = src.mode === "PCV";
+
+  // --- EPAP min : carries directly from source EPAP ---
+  rows.push({
+    param: "EPAP min", value: epap, unit: "cmH₂O", badge: "direct",
+    why: "Source EPAP becomes the lower bound of the auto-EPAP range.",
+  });
+
+  // --- EPAP max : no source equivalent -> clinical bound (yellow) ---
+  rows.push({
+    param: "EPAP max", value: epap + 4, unit: "cmH₂O", badge: "default",
+    why: "Auto-EPAP needs an upper bound the fixed source never had. " +
+         "Shown as EPAP min + 4 as a STARTING point only — set per the patient's " +
+         "obstructive burden and titration goals.",
+  });
+  notes.push(
+    "Fixed EPAP became an auto-adjusting range. The device will now move EPAP " +
+    "between the min and max to manage upper-airway obstruction — confirm the " +
+    "max is appropriate before use."
+  );
+
+  // --- Target Va : the whole point of the mode, derived from measured Vt ---
+  const va = vtToVa(vt, rate);
+  rows.push({
+    param: "Target Va", value: round(va, 1), unit: "L/min", badge: "calculated",
+    why: `Derived from the delivered Vt you entered (${vt} mL) and the set rate ` +
+         `(${rate}/min): Va = (Vt − 150) × rate ÷ 1000.`,
+  });
+  calc.push(
+    `Target Va = (${vt} − 150) × ${rate} ÷ 1000 = ${round(va, 1)} L/min`
+  );
+  notes.push(
+    "The source mode had no volume guarantee — it delivered whatever volume the " +
+    "set pressures produced. The target now guarantees ventilation to this Va, " +
+    "derived from the Vt you read off the flowsheet. Treat it as a starting " +
+    "target and confirm against the patient's actual ventilation on the home device."
+  );
+
+  // --- Target patient rate : we only have set rate inpatient ---
+  rows.push({
+    param: "Target patient rate", value: rate + 2, unit: "/min", badge: "review",
+    why: "iVAPS target rate is normally patient spontaneous RR + 2. Only the set " +
+         "rate is available inpatient, so this is set RR + 2 — re-check once a " +
+         "spontaneous rate is observed on the home device.",
+  });
+
+  // --- PS / IPAP ceiling : source IPAP becomes the pressure-support ceiling ---
+  const psMax = ipap - epap;
+  rows.push({
+    param: "PS max", value: psMax, unit: "cmH₂O", badge: "direct",
+    why: `Source IPAP − EPAP (${ipap} − ${epap}) is the pressure support the ` +
+         `patient was receiving; it becomes the ceiling the device may reach to ` +
+         `hit the volume target.`,
+  });
+  calc.push(`PS max = IPAP − EPAP = ${ipap} − ${epap} = ${psMax} cmH₂O`);
+
+  // --- PS min : needs a floor the source doesn't contain ---
+  rows.push({
+    param: "PS min", value: 4, unit: "cmH₂O", badge: "review",
+    why: "VAPS needs a lower pressure-support bound the fixed source never " +
+         "specified. 4 cmH₂O shown as a conservative floor — set per comfort and " +
+         "the minimum support you want guaranteed.",
+  });
+
+  // --- Backup rate : carries directly ---
+  rows.push({
+    param: "Backup rate", value: rate, unit: "/min", badge: "direct",
+    why: "Source set/backup rate carries directly.",
+  });
+
+  // --- Ti min / max ---
+  const ti = isPCV ? tiFromRate(rate) : tiFromRate(rate);
+  const tiMin = round(ti - 0.2, 2);
+  const tiMax = round(ti + 0.6, 2);
+  rows.push({
+    param: "Ti min", value: tiMin, unit: "s", badge: "calculated",
+    why: isPCV
+      ? `Source PCV Ti is fixed; the flow-cycled target needs a window. ` +
+        `Ti = 60 ÷ ${rate} ÷ 3 = ${round(ti, 2)} s, then −0.2.`
+      : `ST is already flow-cycled. Ti window seeded from rate: ` +
+        `Ti = 60 ÷ ${rate} ÷ 3 = ${round(ti, 2)} s, then −0.2.`,
+  });
+  rows.push({
+    param: "Ti max", value: tiMax, unit: "s", badge: "calculated",
+    why: `Ti = ${round(ti, 2)} s, then +0.6 for the upper bound.`,
+  });
+  calc.push(
+    `Ti = 60 ÷ ${rate} ÷ 3 = ${round(ti, 2)} s  →  Ti min ${tiMin} s, Ti max ${tiMax} s`
+  );
+  if (isPCV) {
+    notes.push(
+      "The source was time-cycled (fixed Ti); the target is flow-cycled. The " +
+      "single Ti became a min/max window so the device can cycle on flow within " +
+      "safe time limits."
+    );
+  }
+
+  // --- Trigger : through L/min (v13 common unit) ---
+  if (src.trigger !== "") {
+    rows.push({
+      param: "Trigger", value: src.trigger, unit: "L/min", badge: "calculated",
+      why: "Translated through L/min, the common trigger unit across devices.",
+    });
+  }
+
+  // --- Rise : ResMed accepts ms directly ---
+  if (src.rise !== "") {
+    rows.push({
+      param: "Rise", value: src.rise, unit: "ms", badge: "direct",
+      why: "ResMed devices set rise time directly in ms; passed through.",
+    });
+  }
+
+  return { rows, calc, notes };
+}
+
+const round = (n, d = 0) => {
+  const f = Math.pow(10, d);
+  return Math.round(n * f) / f;
+};
+
+/* ============================================================================
+   UI
+   ============================================================================ */
+export default function Ventara() {
+  const [src, setSrc] = useState({
+    mode: "ST",
+    ipap: "18",
+    epap: "8",
+    rr: "14",
+    ti: "1.2",
+    vt: "480",
+    trigger: "3",
+    rise: "200",
+  });
+  const [submitted, setSubmitted] = useState(false);
+
+  const result = useMemo(
+    () => (submitted ? translate(src) : null),
+    [submitted, src]
+  );
+
+  const set = (k) => (e) => {
+    setSrc((s) => ({ ...s, [k]: e.target.value }));
+    setSubmitted(false);
+  };
+
+  const valid =
+    src.ipap && src.epap && src.rr && src.vt &&
+    Number(src.ipap) > Number(src.epap);
+
+  return (
+    <div className="vent-root">
+      <style>{CSS}</style>
+
+      <header className="vent-head">
+        <div className="vent-mark">VENTARA</div>
+        <div className="vent-flow">
+          <span className="chip chip-src">{src.mode} · fixed bilevel</span>
+          <span className="arrow">→</span>
+          <span className="chip chip-tgt">VAPS-AE PS · ResMed Astral</span>
+        </div>
+        <p className="vent-sub">
+          Cross-mode translation. Output values declare how they were derived —
+          yellow fields need your judgment before use.
+        </p>
+      </header>
+
+      <div className="vent-grid">
+        {/* ---- INPUT ---- */}
+        <section className="card">
+          <h2 className="card-h">Source settings</h2>
+
+          <label className="fld">
+            <span>Source mode</span>
+            <select value={src.mode} onChange={set("mode")}>
+              <option value="ST">ST (spontaneous/timed)</option>
+              <option value="PCV">PCV (pressure control)</option>
+            </select>
+          </label>
+
+          <div className="fld-row">
+            <label className="fld">
+              <span>IPAP <em>cmH₂O</em></span>
+              <input value={src.ipap} onChange={set("ipap")} inputMode="decimal" />
+            </label>
+            <label className="fld">
+              <span>EPAP <em>cmH₂O</em></span>
+              <input value={src.epap} onChange={set("epap")} inputMode="decimal" />
+            </label>
+          </div>
+
+          <div className="fld-row">
+            <label className="fld">
+              <span>Set rate <em>/min</em></span>
+              <input value={src.rr} onChange={set("rr")} inputMode="decimal" />
+            </label>
+            {src.mode === "PCV" && (
+              <label className="fld">
+                <span>Ti <em>s</em></span>
+                <input value={src.ti} onChange={set("ti")} inputMode="decimal" />
+              </label>
+            )}
+          </div>
+
+          <label className="fld fld-hero">
+            <span>
+              Delivered Vt <em>mL</em>
+              <small>average exhaled Vt from the flowsheet</small>
+            </span>
+            <input value={src.vt} onChange={set("vt")} inputMode="decimal" />
+          </label>
+
+          <div className="fld-row">
+            <label className="fld">
+              <span>Trigger <em>L/min</em></span>
+              <input value={src.trigger} onChange={set("trigger")} inputMode="decimal" />
+            </label>
+            <label className="fld">
+              <span>Rise <em>ms</em></span>
+              <input value={src.rise} onChange={set("rise")} inputMode="decimal" />
+            </label>
+          </div>
+
+          {!valid && (
+            <p className="warn-inline">
+              Enter IPAP, EPAP, rate and delivered Vt. IPAP must exceed EPAP.
+            </p>
+          )}
+
+          <button
+            className="go"
+            disabled={!valid}
+            onClick={() => setSubmitted(true)}
+          >
+            Translate settings
+          </button>
+        </section>
+
+        {/* ---- OUTPUT ---- */}
+        <section className="card card-out">
+          <h2 className="card-h">Target settings</h2>
+
+          {!result && (
+            <div className="empty">
+              Enter the inpatient settings and the delivered tidal volume, then
+              translate. Each result will show how it was derived.
+            </div>
+          )}
+
+          {result && (
+            <>
+              <div className="rows">
+                {result.rows.map((r, i) => (
+                  <Row key={i} r={r} />
+                ))}
+              </div>
+
+              <div className="calc">
+                <h3>Calculations</h3>
+                <ul>
+                  {result.calc.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="notes">
+                <h3>Clinical notes</h3>
+                {result.notes.map((n, i) => (
+                  <p key={i}>{n}</p>
+                ))}
+                <p className="disclaimer">
+                  Starting point only. Confirm all settings against the patient's
+                  ventilation on the target device. Not a substitute for clinical
+                  judgment.
+                </p>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Row({ r }) {
+  const b = BADGE[r.badge];
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`row ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)}>
+      <div className="row-main">
+        <span className="row-param">{r.param}</span>
+        <span className="row-val">
+          {r.value} <em>{r.unit}</em>
+        </span>
+        <span className={`badge ${b.cls}`}>{b.label}</span>
+      </div>
+      {open && <p className="row-why">{r.why}</p>}
+    </div>
+  );
+}
+
+/* ============================================================================
+   STYLES
+   Direction: clinical instrument panel. Deep slate ground, signal-coded badges
+   that read like monitor telemetry, a single warm amber reserved exclusively
+   for "needs your judgment". IBM Plex Mono for values (instrument readout),
+   a grotesk for labels. The signature is the derivation-transparency row:
+   tap any output to see the reasoning, so the tool never asserts without
+   showing its work.
+   ============================================================================ */
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+.vent-root{
+  --ink:#e8edf2; --ink-dim:#9fb0c0; --ink-faint:#647585;
+  --ground:#0e1620; --panel:#16212e; --panel-2:#1c2937; --line:#2a3a4c;
+  --green:#34d399; --purple:#a78bfa; --blue:#56b6e6; --amber:#f5b945;
+  --green-bg:rgba(52,211,153,.12); --purple-bg:rgba(167,139,250,.12);
+  --blue-bg:rgba(86,182,230,.12); --amber-bg:rgba(245,185,69,.14);
+  font-family:'Space Grotesk',system-ui,sans-serif;
+  background:var(--ground); color:var(--ink);
+  min-height:100vh; padding:28px 20px 60px; box-sizing:border-box;
+}
+.vent-root *{box-sizing:border-box}
+
+.vent-head{max-width:1040px;margin:0 auto 26px}
+.vent-mark{
+  font-weight:700;letter-spacing:.34em;font-size:13px;color:var(--ink-dim);
+  margin-bottom:14px;
+}
+.vent-flow{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.chip{
+  font-family:'IBM Plex Mono',monospace;font-size:13px;padding:7px 13px;
+  border-radius:7px;border:1px solid var(--line);
+}
+.chip-src{background:var(--panel);color:var(--ink-dim)}
+.chip-tgt{background:var(--panel-2);color:var(--ink);border-color:#34506a}
+.arrow{color:var(--ink-faint);font-size:18px}
+.vent-sub{color:var(--ink-faint);font-size:14px;margin:14px 0 0;max-width:60ch;line-height:1.5}
+
+.vent-grid{
+  max-width:1040px;margin:0 auto;display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:20px;
+}
+@media(max-width:820px){.vent-grid{grid-template-columns:1fr}}
+
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:22px;
+}
+.card-h{
+  font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--ink-faint);margin:0 0 18px;font-weight:500;
+}
+
+.fld{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.fld>span{
+  font-size:13px;color:var(--ink-dim);display:flex;align-items:baseline;gap:8px;
+}
+.fld>span em{font-style:normal;color:var(--ink-faint);font-size:11px;
+  font-family:'IBM Plex Mono',monospace}
+.fld>span small{color:var(--ink-faint);font-size:11px;font-weight:400}
+.fld input,.fld select{
+  background:var(--ground);border:1px solid var(--line);border-radius:8px;
+  color:var(--ink);padding:10px 12px;font-size:15px;
+  font-family:'IBM Plex Mono',monospace;width:100%;
+}
+.fld input:focus,.fld select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
+.fld-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.fld-hero>span{color:var(--ink)}
+.fld-hero input{border-color:#34506a;background:#101b27}
+
+.warn-inline{color:var(--amber);font-size:12.5px;margin:4px 0 14px;line-height:1.45}
+.go{
+  width:100%;background:var(--blue);color:#06121c;border:0;border-radius:9px;
+  padding:13px;font-family:'Space Grotesk';font-weight:700;font-size:15px;
+  cursor:pointer;letter-spacing:.01em;margin-top:4px;
+}
+.go:disabled{background:var(--panel-2);color:var(--ink-faint);cursor:not-allowed}
+.go:not(:disabled):hover{filter:brightness(1.08)}
+
+.empty{color:var(--ink-faint);font-size:14px;line-height:1.6;padding:30px 4px}
+
+.rows{display:flex;flex-direction:column;gap:8px}
+.row{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+  padding:13px 15px;cursor:pointer;transition:border-color .15s;
+}
+.row:hover{border-color:#3a5168}
+.row-main{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:14px}
+.row-param{font-size:14px;color:var(--ink-dim)}
+.row-val{
+  font-family:'IBM Plex Mono',monospace;font-size:17px;font-weight:600;
+  color:var(--ink);text-align:right;white-space:nowrap;
+}
+.row-val em{font-style:normal;font-size:11px;color:var(--ink-faint);font-weight:400}
+.row-why{
+  margin:11px 0 2px;font-size:13px;line-height:1.55;color:var(--ink-dim);
+  border-top:1px solid var(--line);padding-top:10px;
+}
+
+.badge{
+  font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 9px;
+  border-radius:6px;white-space:nowrap;border:1px solid transparent;
+}
+.b-direct{color:var(--green);background:var(--green-bg);border-color:rgba(52,211,153,.3)}
+.b-calc{color:var(--purple);background:var(--purple-bg);border-color:rgba(167,139,250,.3)}
+.b-ord{color:var(--blue);background:var(--blue-bg);border-color:rgba(86,182,230,.3)}
+.b-default,.b-review{color:var(--amber);background:var(--amber-bg);border-color:rgba(245,185,69,.36)}
+
+.calc,.notes{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+.calc h3,.notes h3{
+  font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-faint);margin:0 0 11px;font-weight:500;
+}
+.calc ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
+.calc li{
+  font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--ink-dim);
+  background:var(--ground);border:1px solid var(--line);border-radius:7px;
+  padding:9px 12px;line-height:1.5;
+}
+.notes p{font-size:13px;line-height:1.6;color:var(--ink-dim);margin:0 0 11px}
+.disclaimer{color:var(--amber)!important;font-size:12.5px!important;
+  border-top:1px solid var(--line);padding-top:11px;margin-top:4px!important}
+`;
+
+
+
+
+
+import React, { useState, useMemo } from "react";
+
+/* ============================================================================
+   VENTARA — Cross-Mode Translator (v14, iteration 2)
+   SOURCE: Philips V60 — S/T or PCV (fixed bilevel / inpatient bipap)
+   TARGET: VAPS-AE PS on a SELECTABLE device. Per-device nomenclature, ordinal
+           scales, capabilities, and "must be turned on" alerts are driven by
+           the Ventara middleware (parsed from the device map), not hardcoded.
+   ============================================================================ */
+
+const DEVICE_DATA = {"devices":{"astral":{"name":"ResMed Astral","mode_label":"iVAPS-AE","fields":{"Tidal Volume":"Target Va","PS min":"Pressure Support min (add to EPAP)","PS max":"Pressure Support max (add to EPAP)","EPAP min":"EPAP min","EPAP max":"EPAP max","Respiratory Rate":"Target Rate (RR = 2/3 target rate)","Back up inspiratory time":null,"Ti min":"Ti min","Ti max":"Ti max","Rise":"Rise (ms)","Trigger Sensitivity":"Trigger (0.5-15 L/min)","Cycle Sensitivity":"Cycle (5-90%)"},"caps":{"target_volume_on":"no","auto_epap_on":"yes","backup_ti":"no","ti_min":"yes","ti_max":"yes"},"alerts":[{"metric":"Respiratory Rate/Back up Ti","alert":"does not exist"}],"scales":{"trigger":[{"o":"very low","v":10},{"o":"low","v":8},{"o":"med","v":6},{"o":"high","v":4},{"o":"very high","v":2}]}},"trilogy100":{"name":"Trilogy 100","mode_label":"AVAPS-AE","fields":{"Tidal Volume":"Tidal Volume","PS min":"PS min","PS max":"PS max","EPAP min":"EPAP min","EPAP max":"EPAP max","Respiratory Rate":"Respiratory Rate","Back up inspiratory time":"Inspiratory Time","Ti min":null,"Ti max":null,"Rise":"Rise (1-6)","Trigger Sensitivity":"Flow trigger sensitivity (1-9 L/min)","Cycle Sensitivity":"Flow cycle sensitivity (10-90%)"},"caps":{"target_volume_on":"no","auto_epap_on":"no","backup_ti":"yes","ti_min":"no","ti_max":"no"},"alerts":[],"scales":{"rise":[{"o":1,"v":100},{"o":2,"v":200},{"o":3,"v":300},{"o":4,"v":400},{"o":5,"v":500},{"o":6,"v":600}]}},"trilogyevo":{"name":"Trilogy EVO / EV300","mode_label":"AVAPS-AE","fields":{"Tidal Volume":"Tidal Volume","PS min":"PS min","PS max":"PS max","EPAP min":"EPAP min","EPAP max":"EPAP max","Respiratory Rate":"Respiratory Rate","Back up inspiratory time":"Inspiratory Time","Ti min":"Ti min","Ti max":"Ti max","Rise":"Rise (0-6)","Trigger Sensitivity":"Flow trigger senstivitiy (0.5-9 L/min)","Cycle Sensitivity":"Flow cycle sensitivity (10-90%)"},"caps":{"target_volume_on":"no","auto_epap_on":"no","backup_ti":"yes","ti_min":"on/off","ti_max":"on/off"},"alerts":[{"metric":"Ti min","alert":"must be turned on to work"},{"metric":"Ti max","alert":"must be turned on to work"}],"scales":{"rise":[{"o":0,"v":50},{"o":1,"v":100},{"o":2,"v":200},{"o":3,"v":300},{"o":4,"v":400},{"o":5,"v":500},{"o":6,"v":600}]}},"vivo45":{"name":"Breas Vivo 45LS","mode_label":"PSV (TgV) - AE","fields":{"Tidal Volume":"Tidal Volume","PS min":"PS min","PS max":"PS max","EPAP min":"EPAP min","EPAP max":"EPAP max","Respiratory Rate":"Respiratory Rate","Back up inspiratory time":"Back up Inspiratory time","Ti min":"Ti min","Ti max":"Ti max","Rise":"Rise (1-9)","Trigger Sensitivity":"Inspiratory trigger (1-9)","Cycle Sensitivity":"Expiratory Trigger (1-9)"},"caps":{"target_volume_on":"yes","auto_epap_on":"yes","backup_ti":"yes","ti_min":"on/off","ti_max":"on/off"},"alerts":[{"metric":"Ti min","alert":"must be turned on to work"},{"metric":"Ti max","alert":"must be turned on to work"},{"metric":"Auto EPAP","alert":"must be turned on to work"}],"scales":{"rise":[{"o":1,"v":50},{"o":2,"v":100},{"o":3,"v":150},{"o":4,"v":200},{"o":5,"v":300},{"o":6,"v":400},{"o":7,"v":500},{"o":8,"v":650},{"o":9,"v":800}],"inspiratory trigger":[{"o":1,"v":0.5},{"o":2,"v":1},{"o":3,"v":2},{"o":4,"v":3},{"o":5,"v":4},{"o":6,"v":5},{"o":7,"v":6},{"o":8,"v":8},{"o":9,"v":9}],"expiratory trigger":[{"o":1,"v":80},{"o":2,"v":65},{"o":3,"v":50},{"o":4,"v":40},{"o":5,"v":30},{"o":6,"v":25},{"o":7,"v":20},{"o":8,"v":15},{"o":9,"v":5}]}},"luisa":{"name":"Lowenstein Luisa","mode_label":"TTV-VAPS-AE","fields":{"Tidal Volume":"Target volume","PS min":"PS","PS max":"PS max","EPAP min":"EPAP min","EPAP max":"EPAP max","Respiratory Rate":"Rate","Back up inspiratory time":"Ti Timed","Ti min":"Ti Min","Ti max":"Ti Max","Rise":"Pressure Increase (1-4)","Trigger Sensitivity":"Inspiratory Sensitivity (1-10)","Cycle Sensitivity":"Expiratory Sensitivity (%)"},"caps":{"target_volume_on":"no","auto_epap_on":"no","backup_ti":"yes","ti_min":"on/off","ti_max":"on/off"},"alerts":[],"scales":{"inspiratory sensitivity":[{"o":1,"v":0.5},{"o":2,"v":1},{"o":3,"v":2},{"o":4,"v":3},{"o":5,"v":4},{"o":6,"v":5},{"o":7,"v":6},{"o":8,"v":8},{"o":9,"v":9},{"o":10,"v":10}]}},"vpro":{"name":"React Health VPro","mode_label":"PS with target volume - Intellipap ON","fields":{"Tidal Volume":"Tidal Volume","PS min":"PS min","PS max":"PS max","EPAP min":"PEEP min","EPAP max":"PEEP Max","Respiratory Rate":"Breath Rate","Back up inspiratory time":"Inspiratory Time","Ti min":null,"Ti max":"Time Cycle","Rise":"Rise Time (1-6)","Trigger Sensitivity":"Flow Trigger (0.5-9L/min)","Cycle Sensitivity":"Flow Cycle (5-95%)"},"caps":{"target_volume_on":"yes","auto_epap_on":"yes","backup_ti":"yes","ti_min":"no","ti_max":"on/off"},"alerts":[{"metric":"IntelliPAP","alert":"must be turned on to work"},{"metric":"Time Cycle","alert":"Time cycle = Ti max"},{"metric":"Time Cycle","alert":"must be turned on to work"}],"scales":{"rise":[{"o":1,"v":100},{"o":2,"v":200},{"o":3,"v":300},{"o":4,"v":400},{"o":5,"v":500},{"o":6,"v":600}]}}}};
+const DEVICES = DEVICE_DATA.devices;
+const DEVICE_ORDER = ["astral","trilogy100","trilogyevo","vivo45","luisa","vpro"];
+
+const BADGE = {
+  direct:     { label: "direct",        cls: "b-direct" },
+  calculated: { label: "calculated",    cls: "b-calc" },
+  ordinal:    { label: "closest step",  cls: "b-ord" },
+  default:    { label: "default \u26A0", cls: "b-default" },
+  review:     { label: "review \u26A0",  cls: "b-review" },
+  na:         { label: "not on device", cls: "b-na" },
+};
+
+const round = (n, d = 0) => { const f = Math.pow(10, d); return Math.round(n * f) / f; };
+const v60RiseToMs = (ord) => (Number(ord) - 1) * 100 + 100;
+
+function closestStep(scale, targetVal) {
+  let best = null;
+  for (const s of scale) {
+    const d = Math.abs(Number(s.v) - targetVal);
+    if (best === null || d < best.d) best = { ...s, d };
+  }
+  return best;
+}
+
+function translate(src, deviceId) {
+  const dev = DEVICES[deviceId];
+  const F = dev.fields;
+  const caps = dev.caps;
+  const rows = [], calc = [], notes = [], flags = [];
+
+  const rate = Number(src.rr);
+  const ipap = Number(src.ipap);
+  const epap = Number(src.epap);
+  const vt = Number(src.vt);
+  const ti = Number(src.ti);
+  const support = ipap - epap;
+  const label = (k) => F[k] || k;
+
+  // ===== Volume target =====
+  if (F["Tidal Volume"] === "Target Va") {
+    const targetRate = rate + 2;
+    const va = ((vt - 150) * targetRate) / 1000;
+    rows.push({ field: label("Tidal Volume"), value: round(va, 1), unit: "L/min", badge: "calculated",
+      why: `Astral targets alveolar ventilation. Va = (Vt \u2212 150) \u00D7 target rate \u00F7 1000 = (${vt} \u2212 150) \u00D7 ${targetRate} \u00F7 1000.` });
+    calc.push(`Target Va = (${vt} \u2212 150) \u00D7 ${targetRate} \u00F7 1000 = ${round(va,1)} L/min`);
+    notes.push("This device targets alveolar ventilation (Va), not tidal volume, so the delivered Vt you entered was converted using the target rate.");
+  } else {
+    rows.push({ field: label("Tidal Volume"), value: vt, unit: "mL", badge: "direct",
+      why: "This device targets tidal volume directly, so the delivered Vt you entered carries across as the volume target." });
+    if (caps.target_volume_on === "yes")
+      flags.push(`Target volume must be switched ON for ${dev.name} to guarantee this Vt.`);
+  }
+
+  // ===== EPAP =====
+  const hasAutoEpap = caps.auto_epap_on === "yes";
+  rows.push({ field: label("EPAP min"), value: epap, unit: "cmH\u2082O", badge: "direct",
+    why: hasAutoEpap
+      ? "Source EPAP becomes the lower bound of the auto-EPAP range."
+      : "Source EPAP carries directly (this device has no auto-EPAP range)." });
+
+  if (hasAutoEpap) {
+    rows.push({ field: label("EPAP max"), value: epap + 4, unit: "cmH\u2082O", badge: "default",
+      why: "Auto-EPAP needs an upper bound the fixed source never had. Shown as EPAP min + 4 as a STARTING point \u2014 set per the patient's obstructive burden." });
+    notes.push("Fixed EPAP became an auto-adjusting range; confirm the max before use.");
+    if (dev.alerts.some(a => /auto epap|intellipap/i.test(a.metric || "")))
+      flags.push(`Auto-EPAP must be switched ON for ${dev.name}, or EPAP stays fixed at the min.`);
+  } else {
+    rows.push({ field: label("EPAP max"), value: "\u2014", unit: "", badge: "na",
+      why: `${dev.name} in this mode has no auto-EPAP, so there is no EPAP max. EPAP is a single fixed value (the EPAP min above). This is a true VAPS, not auto-titrating EPAP.` });
+    notes.push(`${dev.name} does not offer auto-adjusting EPAP in this mode \u2014 EPAP stays fixed at the source value. If auto-EPAP is clinically needed, choose a device that supports it (Astral, Vivo 45LS, or VPro).`);
+  }
+
+  // ===== PS band =====
+  const psMax = support + 4;
+  let psMin = support - 2;
+  const psUnder = psMin < 0;
+  if (psUnder) psMin = 0;
+  rows.push({ field: label("PS max"), value: psMax, unit: "cmH\u2082O", badge: "calculated",
+    why: `(IPAP \u2212 EPAP) + 4 = (${ipap} \u2212 ${epap}) + 4.` });
+  rows.push({ field: label("PS min"), value: psMin, unit: "cmH\u2082O", badge: psUnder ? "review" : "calculated",
+    why: psUnder
+      ? `(IPAP \u2212 EPAP) \u2212 2 would be below 0 (support only ${support}); floored at 0 \u2014 confirm.`
+      : `(IPAP \u2212 EPAP) \u2212 2 = (${ipap} \u2212 ${epap}) \u2212 2. Tight band around the working support.` });
+  calc.push(`Support = IPAP \u2212 EPAP = ${ipap} \u2212 ${epap} = ${support} cmH\u2082O`);
+  calc.push(`PS band = ${support} \u2212 2 to ${support} + 4 \u2192 PS min ${psMin}, PS max ${psMax} cmH\u2082O`);
+  notes.push("Pressure support was set tightly around the support the patient was receiving inpatient (IPAP \u2212 EPAP), \u22122 to +4, to reproduce what was working.");
+
+  // ===== Rate =====
+  if (F["Respiratory Rate"].toLowerCase().includes("target rate")) {
+    rows.push({ field: label("Respiratory Rate"), value: rate + 2, unit: "/min", badge: "calculated",
+      why: `Astral uses a single target rate = source rate + 2 (${rate} + 2).` });
+    calc.push(`Target rate = ${rate} + 2 = ${rate + 2} /min`);
+  } else {
+    rows.push({ field: label("Respiratory Rate"), value: rate, unit: "/min", badge: "direct",
+      why: "Source set/backup rate carries directly." });
+  }
+
+  // ===== Ti =====
+  if (F["Ti min"] || F["Ti max"]) {
+    const tiMin = round(ti - 0.2, 1), tiMax = round(ti + 0.4, 1);
+    if (F["Ti min"])
+      rows.push({ field: label("Ti min"), value: tiMin, unit: "s", badge: "calculated", why: `Entered Ti ${ti} s \u2212 0.2.` });
+    if (F["Ti max"])
+      rows.push({ field: label("Ti max"), value: tiMax, unit: "s", badge: "calculated",
+        why: `Entered Ti ${ti} s + 0.4.${F["Ti max"] === "Time Cycle" ? " On this device the time-cycle field equals Ti max." : ""}` });
+    calc.push(`Ti window: ${ti} \u2212 0.2 = ${tiMin} s, ${ti} + 0.4 = ${tiMax} s`);
+    if (caps.ti_min === "on/off" || caps.ti_max === "on/off")
+      flags.push(`Ti min/max must be switched ON for ${dev.name} or the window won't apply.`);
+  } else {
+    rows.push({ field: "Ti min / Ti max", value: "\u2014", unit: "", badge: "na",
+      why: `${dev.name} (${dev.mode_label}) has no Ti min/max in this mode; it uses a backup inspiratory time instead. Source Ti informs the backup Ti.` });
+    if (F["Back up inspiratory time"])
+      rows.push({ field: label("Back up inspiratory time"), value: ti, unit: "s", badge: "direct",
+        why: "Source Ti carries to the backup inspiratory time." });
+  }
+
+  // ===== Rise =====
+  const srcMs = v60RiseToMs(src.rise);
+  if (/\bms\b/i.test(F["Rise"] || "")) {
+    rows.push({ field: label("Rise"), value: srcMs, unit: "ms", badge: "calculated",
+      why: `V60 rise ${src.rise} (1\u20136) \u2192 ${srcMs} ms; this device sets rise directly in ms.` });
+    calc.push(`Rise: V60 ${src.rise} \u2192 ${srcMs} ms (direct)`);
+  } else if (dev.scales.rise) {
+    const step = closestStep(dev.scales.rise, srcMs);
+    rows.push({ field: label("Rise"), value: step.o, unit: `(\u2248${step.v} ms)`, badge: "ordinal",
+      why: `V60 rise ${src.rise} \u2248 ${srcMs} ms; closest step on ${dev.name} is ${step.o} (${step.v} ms).` });
+    calc.push(`Rise: V60 ${src.rise} \u2248 ${srcMs} ms \u2192 ${dev.name} step ${step.o} (${step.v} ms)`);
+  }
+
+  // ===== Trigger =====
+  const trigVal = Number(src.trigger);
+  const trigScale = dev.scales.trigger || dev.scales["inspiratory trigger"] || dev.scales["inspiratory sensitivity"];
+  if (trigScale) {
+    const step = closestStep(trigScale, trigVal);
+    rows.push({ field: label("Trigger Sensitivity"), value: step.o, unit: `(\u2248${step.v} L/min)`, badge: "ordinal",
+      why: `Source trigger ${trigVal} L/min; closest step on ${dev.name} is ${step.o} (${step.v} L/min).` });
+    calc.push(`Trigger: ${trigVal} L/min \u2192 ${dev.name} step ${step.o} (${step.v} L/min)`);
+  } else {
+    rows.push({ field: label("Trigger Sensitivity"), value: trigVal, unit: "L/min", badge: "direct",
+      why: "Trigger translates through L/min, the common unit; set directly here." });
+  }
+
+  // ===== Remaining device alerts =====
+  dev.alerts.forEach(a => {
+    if (/intellipap/i.test(a.metric) && !flags.some(f => /intellipap|auto-epap/i.test(f)))
+      flags.push(`IntelliPAP (auto-EPAP) must be switched ON for ${dev.name}.`);
+    else if (/time cycle/i.test(a.metric) && /must be turned on/i.test(a.alert) && !flags.some(f => /time cycle/i.test(f)))
+      flags.push(`Time Cycle must be switched ON for ${dev.name} (it acts as Ti max).`);
+    else if (/does not exist/i.test(a.alert))
+      notes.push(`Note for ${dev.name}: ${a.metric} \u2014 ${a.alert}.`);
+  });
+
+  return { rows, calc, notes, flags, dev };
+}
+
+export default function Ventara() {
+  const [src, setSrc] = useState({ mode: "ST", ipap: "18", epap: "8", rr: "14", ti: "1.2", vt: "480", trigger: "3", rise: "3" });
+  const [deviceId, setDeviceId] = useState("astral");
+  const [submitted, setSubmitted] = useState(false);
+
+  const result = useMemo(() => (submitted ? translate(src, deviceId) : null), [submitted, src, deviceId]);
+  const set = (k) => (e) => { setSrc((s) => ({ ...s, [k]: e.target.value })); setSubmitted(false); };
+  const pickDevice = (id) => { setDeviceId(id); setSubmitted(false); };
+
+  const valid = src.ipap && src.epap && src.rr && src.vt && src.ti && Number(src.ipap) > Number(src.epap);
+  const dev = DEVICES[deviceId];
+
+  return (
+    <div className="vent-root">
+      <style>{CSS}</style>
+      <header className="vent-head">
+        <div className="vent-mark">VENTARA</div>
+        <div className="vent-flow">
+          <span className="chip chip-src">Philips V60 \u00B7 {src.mode}</span>
+          <span className="arrow">\u2192</span>
+          <span className="chip chip-tgt">{dev.name} \u00B7 {dev.mode_label}</span>
+        </div>
+        <p className="vent-sub">Inpatient bilevel \u2192 home VAPS-AE. Pick a target device; output adopts that device's field names, scales, and switches. Yellow fields need your judgment.</p>
+      </header>
+
+      <div className="vent-grid">
+        <section className="card">
+          <h2 className="card-h">Source \u2014 Philips V60</h2>
+          <label className="fld"><span>Mode</span>
+            <select value={src.mode} onChange={set("mode")}>
+              <option value="ST">S/T (spontaneous/timed)</option>
+              <option value="PCV">PCV (pressure control)</option>
+            </select></label>
+          <div className="fld-row">
+            <label className="fld"><span>IPAP <em>cmH\u2082O</em></span><input value={src.ipap} onChange={set("ipap")} inputMode="decimal" /></label>
+            <label className="fld"><span>EPAP <em>cmH\u2082O</em></span><input value={src.epap} onChange={set("epap")} inputMode="decimal" /></label>
+          </div>
+          <div className="fld-row">
+            <label className="fld"><span>Set rate <em>/min</em></span><input value={src.rr} onChange={set("rr")} inputMode="decimal" /></label>
+            <label className="fld"><span>Insp. time <em>s</em></span><input value={src.ti} onChange={set("ti")} inputMode="decimal" /></label>
+          </div>
+          <label className="fld fld-hero"><span>Delivered Vt <em>mL</em><small>average exhaled Vt from the flowsheet</small></span>
+            <input value={src.vt} onChange={set("vt")} inputMode="decimal" /></label>
+          <div className="fld-row">
+            <label className="fld"><span>Trigger <em>L/min</em></span><input value={src.trigger} onChange={set("trigger")} inputMode="decimal" /></label>
+            <label className="fld"><span>Rise <em>1\u20136</em></span>
+              <select value={src.rise} onChange={set("rise")}>
+                {[1,2,3,4,5,6].map(n => <option key={n} value={String(n)}>{n}</option>)}
+              </select></label>
+          </div>
+
+          <h2 className="card-h" style={{ marginTop: 22 }}>Target device</h2>
+          <div className="dev-grid">
+            {DEVICE_ORDER.map(id => (
+              <button key={id} className={`dev-btn ${deviceId === id ? "on" : ""}`} onClick={() => pickDevice(id)}>
+                <span className="dev-name">{DEVICES[id].name}</span>
+                <span className="dev-mode">{DEVICES[id].mode_label}</span>
+                {DEVICES[id].caps.auto_epap_on !== "yes" && <span className="dev-tag">fixed EPAP</span>}
+              </button>
+            ))}
+          </div>
+
+          {!valid && <p className="warn-inline">Enter IPAP, EPAP, rate, Ti and delivered Vt. IPAP must exceed EPAP.</p>}
+          <button className="go" disabled={!valid} onClick={() => setSubmitted(true)}>Translate to {dev.name}</button>
+        </section>
+
+        <section className="card card-out">
+          <h2 className="card-h">{dev.name} \u2014 {dev.mode_label}</h2>
+          {!result && <div className="empty">Enter the V60 settings and delivered tidal volume, choose a target device, then translate. Output uses the selected device's own field names.</div>}
+          {result && <>
+            {result.flags.length > 0 && (
+              <div className="flags"><h3>Device switches to check</h3>
+                {result.flags.map((f, i) => <p key={i}>\u26A0 {f}</p>)}</div>
+            )}
+            <div className="rows">{result.rows.map((r, i) => <Row key={i} r={r} />)}</div>
+            <div className="calc"><h3>Calculations</h3>
+              <ul>{result.calc.map((c, i) => <li key={i}>{c}</li>)}</ul></div>
+            <div className="notes"><h3>Clinical notes</h3>
+              {result.notes.map((n, i) => <p key={i}>{n}</p>)}
+              <p className="disclaimer">Starting point only. Confirm all settings against the patient's ventilation on the target device. Not a substitute for clinical judgment.</p></div>
+          </>}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Row({ r }) {
+  const b = BADGE[r.badge];
+  const [open, setOpen] = useState(false);
+  const naish = r.badge === "na";
+  return (
+    <div className={`row ${open ? "open" : ""} ${naish ? "row-na" : ""}`} onClick={() => setOpen(o => !o)}>
+      <div className="row-main">
+        <span className="row-param">{r.field}</span>
+        <span className="row-val">{r.value} <em>{r.unit}</em></span>
+        <span className={`badge ${b.cls}`}>{b.label}</span>
+      </div>
+      {open && <p className="row-why">{r.why}</p>}
+    </div>
+  );
+}
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+.vent-root{--ink:#e8edf2;--ink-dim:#9fb0c0;--ink-faint:#647585;--ground:#0e1620;--panel:#16212e;--panel-2:#1c2937;--line:#2a3a4c;--green:#34d399;--purple:#a78bfa;--blue:#56b6e6;--amber:#f5b945;--na:#5a6b7c;--green-bg:rgba(52,211,153,.12);--purple-bg:rgba(167,139,250,.12);--blue-bg:rgba(86,182,230,.12);--amber-bg:rgba(245,185,69,.14);--na-bg:rgba(90,107,124,.12);font-family:'Space Grotesk',system-ui,sans-serif;background:var(--ground);color:var(--ink);min-height:100vh;padding:28px 20px 60px;box-sizing:border-box;}
+.vent-root *{box-sizing:border-box}
+.vent-head{max-width:1100px;margin:0 auto 26px}
+.vent-mark{font-weight:700;letter-spacing:.34em;font-size:13px;color:var(--ink-dim);margin-bottom:14px}
+.vent-flow{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.chip{font-family:'IBM Plex Mono',monospace;font-size:13px;padding:7px 13px;border-radius:7px;border:1px solid var(--line)}
+.chip-src{background:var(--panel);color:var(--ink-dim)}
+.chip-tgt{background:var(--panel-2);color:var(--ink);border-color:#34506a}
+.arrow{color:var(--ink-faint);font-size:18px}
+.vent-sub{color:var(--ink-faint);font-size:14px;margin:14px 0 0;max-width:66ch;line-height:1.5}
+.vent-grid{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:20px}
+@media(max-width:860px){.vent-grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
+.card-h{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 18px;font-weight:500}
+.fld{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.fld>span{font-size:13px;color:var(--ink-dim);display:flex;align-items:baseline;gap:8px}
+.fld>span em{font-style:normal;color:var(--ink-faint);font-size:11px;font-family:'IBM Plex Mono',monospace}
+.fld>span small{color:var(--ink-faint);font-size:11px;font-weight:400}
+.fld input,.fld select{background:var(--ground);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:10px 12px;font-size:15px;font-family:'IBM Plex Mono',monospace;width:100%}
+.fld input:focus,.fld select:focus{outline:2px solid var(--blue);border-color:var(--blue)}
+.fld-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.fld-hero>span{color:var(--ink)}
+.fld-hero input{border-color:#34506a;background:#101b27}
+.dev-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px}
+.dev-btn{display:flex;flex-direction:column;gap:3px;align-items:flex-start;text-align:left;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:10px 12px;cursor:pointer;color:var(--ink-dim);transition:border-color .15s,background .15s}
+.dev-btn:hover{border-color:#3a5168}
+.dev-btn.on{border-color:var(--blue);background:#13212e;color:var(--ink)}
+.dev-name{font-size:13px;font-weight:500}
+.dev-mode{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-faint)}
+.dev-tag{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--amber);background:var(--amber-bg);border:1px solid rgba(245,185,69,.3);border-radius:5px;padding:1px 6px;margin-top:3px}
+.warn-inline{color:var(--amber);font-size:12.5px;margin:4px 0 14px;line-height:1.45}
+.go{width:100%;background:var(--blue);color:#06121c;border:0;border-radius:9px;padding:13px;font-family:'Space Grotesk';font-weight:700;font-size:15px;cursor:pointer;margin-top:4px}
+.go:disabled{background:var(--panel-2);color:var(--ink-faint);cursor:not-allowed}
+.go:not(:disabled):hover{filter:brightness(1.08)}
+.empty{color:var(--ink-faint);font-size:14px;line-height:1.6;padding:30px 4px}
+.flags{background:rgba(245,185,69,.08);border:1px solid rgba(245,185,69,.3);border-radius:10px;padding:13px 15px;margin-bottom:16px}
+.flags h3{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin:0 0 8px;font-weight:600}
+.flags p{font-size:13px;line-height:1.5;color:var(--ink-dim);margin:0 0 6px}
+.flags p:last-child{margin-bottom:0}
+.rows{display:flex;flex-direction:column;gap:8px}
+.row{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:13px 15px;cursor:pointer;transition:border-color .15s}
+.row:hover{border-color:#3a5168}
+.row-na{opacity:.7}
+.row-main{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:14px}
+.row-param{font-size:14px;color:var(--ink-dim)}
+.row-val{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:600;color:var(--ink);text-align:right;white-space:nowrap}
+.row-val em{font-style:normal;font-size:11px;color:var(--ink-faint);font-weight:400}
+.row-why{margin:11px 0 2px;font-size:13px;line-height:1.55;color:var(--ink-dim);border-top:1px solid var(--line);padding-top:10px}
+.badge{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 9px;border-radius:6px;white-space:nowrap;border:1px solid transparent}
+.b-direct{color:var(--green);background:var(--green-bg);border-color:rgba(52,211,153,.3)}
+.b-calc{color:var(--purple);background:var(--purple-bg);border-color:rgba(167,139,250,.3)}
+.b-ord{color:var(--blue);background:var(--blue-bg);border-color:rgba(86,182,230,.3)}
+.b-default,.b-review{color:var(--amber);background:var(--amber-bg);border-color:rgba(245,185,69,.36)}
+.b-na{color:var(--na);background:var(--na-bg);border-color:rgba(90,107,124,.3)}
+.calc,.notes{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+.calc h3,.notes h3{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 11px;font-weight:500}
+.calc ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
+.calc li{font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--ink-dim);background:var(--ground);border:1px solid var(--line);border-radius:7px;padding:9px 12px;line-height:1.5}
+.notes p{font-size:13px;line-height:1.6;color:var(--ink-dim);margin:0 0 11px}
+.disclaimer{color:var(--amber)!important;font-size:12.5px!important;border-top:1px solid var(--line);padding-top:11px;margin-top:4px!important}
+`;
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ventara — Ventilator Settings Translator (v13)</title>
+<style>
+:root{
+  --font-sans:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --text-primary:#13202b; --text-secondary:#5c6b73; --text-muted:#95a1a8;
+  --surface-1:#ffffff; --surface-2:#f6f4ee; --border:#dde3e1; --border-accent:#0f6e6e;
+  --radius:8px; --fill-accent:#0f6e6e; --fill-accent-hover:#0c5a5a; --on-accent:#ffffff;
+  --bg-accent:#e6f0ee; --text-accent:#0a5b5b; --border-accent:#0f6e6e;
+  --bg-success:#e7f4ec; --text-success:#1a7a44; --border-success:#bfe0cc;
+  --bg-warning:#fbf2dd; --text-warning:#9a6a00; --border-warning:#ecd9a8;
+  --bg-pro:#efe9fb; --text-pro:#6b3fc0; --border-pro:#d6c8f0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);color:var(--text-primary);background:var(--surface-2);padding:24px 16px 64px}
+.wrap{max-width:1000px;margin:0 auto}
+h2{font-size:20px;font-weight:600;margin-bottom:4px}
+.sub{font-size:13px;color:var(--text-secondary);margin-bottom:1.25rem}
+.slabel{font-size:11px;font-weight:500;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.card{background:var(--surface-1);border:0.5px solid var(--border);border-radius:12px;padding:1.25rem;margin-bottom:12px}
+select,input{width:100%;border:0.5px solid var(--border);border-radius:var(--radius);background:var(--surface-1);color:var(--text-primary);font-family:var(--font-sans);font-size:14px;padding:8px 10px;height:36px;outline:none}
+select:focus,input:focus{border-color:var(--border-accent);box-shadow:0 0 0 2px var(--bg-accent)}
+label{display:block;font-size:13px;color:var(--text-secondary);margin-bottom:4px}
+.field{margin-bottom:10px}
+.cols{display:grid;grid-template-columns:1fr 32px 1fr;gap:0;align-items:start}
+@media(max-width:640px){.cols{grid-template-columns:1fr;gap:16px}.arrow{transform:rotate(90deg);padding:8px 0}}
+.arrow{display:flex;align-items:center;justify-content:center;padding-top:26px;color:var(--text-muted);font-size:20px}
+.btn{width:100%;background:var(--fill-accent);color:var(--on-accent);border:none;border-radius:var(--radius);padding:10px;font-size:15px;font-weight:500;cursor:pointer;margin-top:4px}
+.btn:hover{background:var(--fill-accent-hover)}
+.rrow{display:flex;justify-content:space-between;align-items:flex-start;padding:9px 0;border-bottom:0.5px solid var(--border)}
+.rrow:last-child{border-bottom:none}
+.rkey{font-size:13px;flex:1;padding-right:8px}
+.rkey-sub{font-size:11px;color:var(--text-muted);margin-top:2px}
+.rval{font-size:13px;font-weight:500;text-align:right;max-width:58%}
+.rval-sub{font-size:11px;color:var(--text-muted);font-weight:400;margin-top:2px}
+.badge{display:inline-block;border-radius:4px;font-size:11px;padding:2px 6px;margin-left:6px}
+.bd{background:var(--bg-success);color:var(--text-success)}
+.bc{background:var(--bg-accent);color:var(--text-accent)}
+.bw{background:var(--bg-warning);color:var(--text-warning)}
+.bp{background:var(--bg-pro);color:var(--text-pro)}
+.calcbox{background:var(--bg-accent);border:0.5px solid var(--border-accent);border-radius:var(--radius);padding:10px 12px;margin-top:10px;font-size:13px;color:var(--text-accent);line-height:1.8}
+.bridgebox{background:var(--bg-pro);border:0.5px solid var(--border-pro);border-radius:var(--radius);padding:10px 12px;margin-top:10px;font-size:13px;color:var(--text-pro);line-height:1.6}
+.warnbox{background:var(--bg-warning);border:0.5px solid var(--border-warning);border-radius:var(--radius);padding:10px 12px;margin-top:10px;font-size:13px;color:var(--text-warning);line-height:1.6}
+.disc{font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.5}
+.mpill{background:var(--bg-success);color:var(--text-success);border-radius:var(--radius);font-size:12px;padding:3px 10px;font-weight:500;display:inline-block}
+.mpill-bridge{background:var(--bg-pro);color:var(--text-pro);border-radius:var(--radius);font-size:12px;padding:3px 10px;font-weight:500;display:inline-block}
+.empty{color:var(--text-muted);font-size:14px;text-align:center;padding:1.5rem 0}
+.compat-note{font-size:12px;color:var(--text-muted);margin-top:4px}
+.footer{font-size:11px;color:var(--text-muted);margin-top:20px;line-height:1.5;border-top:0.5px solid var(--border);padding-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h2>Ventara — ventilator settings translator</h2>
+<p class="sub">Same-mode translation across devices. Select source, enter settings, pick target. <strong>Educational decision support — always verify clinically.</strong></p>
+
+<div class="card">
+  <div class="cols">
+    <div>
+      <div class="slabel">Source device</div>
+      <div class="field"><label>Device</label>
+        <select id="srcDev" onchange="onSrcDev()">
+          <option value="">Select device...</option>
+          <option>Resmed Aircurve 10 ST (A)</option>
+          <option>Resmed Astral</option>
+          <option>Respironics V60</option>
+          <option>Trilogy 100</option>
+          <option>Trilogy EVO/EV300</option>
+          <option>Breas Vivo 45LS</option>
+          <option>Lowenstein Luisa</option>
+          <option>React Health VPro</option>
+        </select>
+      </div>
+      <div class="field"><label>Mode</label>
+        <select id="srcMode" onchange="onSrcMode()"><option value="">Select mode...</option></select>
+      </div>
+      <div id="srcFields"></div>
+    </div>
+    <div class="arrow">&#8594;</div>
+    <div>
+      <div class="slabel">Target device</div>
+      <div class="field"><label>Device</label>
+        <select id="tgtDev" onchange="onTgtDev()">
+          <option value="">Select a source mode first...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Mode on target device</label>
+        <div id="tgtModeDisplay" style="font-size:14px;color:var(--text-muted);padding:8px 0">— select devices and translate —</div>
+        <div id="tgtCompatNote" class="compat-note"></div>
+      </div>
+    </div>
+  </div>
+  <button class="btn" onclick="doTranslate()">&#8635;&nbsp; Translate settings</button>
+</div>
+
+<div id="output"></div>
+
+<p class="footer">Ventara v13 — same-mode cross-device translator. Educational decision support only, not a coverage guarantee or prescription. The treating clinician confirms and titrates every value.</p>
+</div>
+
+<script>
+const CYCLE_DEFAULT_PCT=25;
+const CYCLE_DEFAULT_MSG="No cycle sensitivity on source mode — defaulted to 25% (medium). Adjust based on patient flow profile.";
+const NO_CYCLE_MODES=["PAC","VAPS-PC","VAPS-AE PC"];
+function calcTiFromRR(rr){return Math.round((60/rr/3)*10)/10;}
+const SINGLE_TI_IDS=new Set(["ti","ti_backup"]);
+const RISE_RESMED={id:"rise",label:"Rise",unit:"ms",t:"number",pref:"ms"};
+const ORDINAL_RISE_KEYS=new Set(["V60_rise","T100_rise","TEVO_rise","Breas_rise","Low_rise","VPro_rise"]);
+const ORDINAL_TRIGGER_KEYS=new Set(["V60_trigger","Breas_trigger","Low_trigger"]);
+
+const DEV_MODES={
+  "Resmed Aircurve 10 ST (A)":{
+    "Pressure Support":{mode:"S/T",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      RISE_RESMED,
+      {id:"trigger",label:"Trigger",unit:"",t:"verbal",opts:["very low","low","med","high","very high"]},
+      {id:"cycle",label:"Cycle",unit:"",t:"verbal",opts:["very low","low","med","high","very high"]},
+    ]},
+    "PAC":{mode:"PAC",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      RISE_RESMED,
+      {id:"trigger",label:"Trigger",unit:"",t:"verbal",opts:["very low","low","med","high","very high"]},
+    ]},
+    "VAPS-PS":{mode:"iVAPS",fields:[
+      {id:"target_va",label:"Target Va",unit:"L/min",t:"number"},
+      {id:"ipap_min",label:"PS min (above EPAP)",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"ipap_max",label:"PS max (above EPAP)",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Target Rate",unit:"bpm",t:"number",note:"= patient RR + 2"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      RISE_RESMED,
+      {id:"trigger",label:"Trigger",unit:"",t:"verbal",opts:["very low","low","med","high","very high"]},
+      {id:"cycle",label:"Cycle",unit:"",t:"verbal",opts:["very low","low","med","high","very high"]},
+    ]},
+  },
+  "Resmed Astral":{
+    "VAPS-PS":{mode:"iVAPS / PS with Safety Volume",fields:[
+      {id:"target_va",label:"Target Va",unit:"L/min",t:"number"},
+      {id:"ipap_min",label:"PS min (above EPAP)",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"ipap_max",label:"PS max (above EPAP)",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"epap",label:"PEEP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Target Rate",unit:"bpm",t:"number",note:"= patient RR + 2"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      RISE_RESMED,
+      {id:"trigger",label:"Trigger",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Cycle",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "VAPS-PC":{mode:"PAC with Safety Volume",fields:[
+      {id:"vt",label:"Safety Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PC (above EPAP)",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"ipap_max",label:"PC max (above EPAP)",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"epap",label:"PEEP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Safety Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      RISE_RESMED,
+      {id:"trigger",label:"Trigger",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+    "VAPS-AE PS":{mode:"iVAPS-AE",fields:[
+      {id:"target_va",label:"Target Va",unit:"L/min",t:"number"},
+      {id:"ipap_min",label:"PS min",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PS max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"EPAP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"EPAP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Target Rate",unit:"bpm",t:"number",note:"= patient RR + 2"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      RISE_RESMED,
+      {id:"trigger",label:"Trigger",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Cycle",unit:"%",t:"number",pref:"pct"},
+    ]},
+  },
+  "Respironics V60":{
+    "Pressure Support":{mode:"S/T",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20135",t:"ordinal",key:"V60_rise"},
+      {id:"trigger",label:"Trigger",unit:"1\u20137",t:"ordinal",key:"V60_trigger"},
+      {id:"cycle",label:"E-Cycle",unit:"",t:"verbal",opts:["low","med","high"]},
+    ]},
+    "PAC":{mode:"PCV",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20135",t:"ordinal",key:"V60_rise"},
+      {id:"trigger",label:"Trigger",unit:"1\u20137",t:"ordinal",key:"V60_trigger"},
+    ]},
+    "VAPS-PS":{mode:"AVAPS",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"IPAP min",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"ipap_max",label:"IPAP max",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20135",t:"ordinal",key:"V60_rise"},
+      {id:"trigger",label:"Trigger",unit:"1\u20137",t:"ordinal",key:"V60_trigger"},
+      {id:"cycle",label:"E-Cycle",unit:"",t:"verbal",opts:["low","med","high"]},
+    ]},
+  },
+  "Trilogy 100":{
+    "Pressure Support":{mode:"S/T",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20136",t:"ordinal",key:"T100_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow cycle sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "PAC":{mode:"Pressure Control",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20136",t:"ordinal",key:"T100_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+    "VAPS-PS":{mode:"S/T - AVAPS",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"IPAP min",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"ipap_max",label:"IPAP max",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20136",t:"ordinal",key:"T100_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow cycle sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "VAPS-PC":{mode:"PC - AVAPS",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"IPAP min",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"ipap_max",label:"IPAP max",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20136",t:"ordinal",key:"T100_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+    "VAPS-AE PS":{mode:"AVAPS-AE",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PS min",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PS max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"EPAP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"EPAP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20136",t:"ordinal",key:"T100_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow cycle sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+  },
+  "Trilogy EVO/EV300":{
+    "Pressure Support":{mode:"S/T",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"0\u20136",t:"ordinal",key:"TEVO_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow cycle sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "PAC":{mode:"PC/AC",fields:[
+      {id:"pip",label:"PC (above PEEP)",unit:"cmH\u2082O",t:"number",pref:"above_epap",note:"Enter above PEEP"},
+      {id:"epap",label:"PEEP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"0\u20136",t:"ordinal",key:"TEVO_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+    "VAPS-PS":{mode:"S/T - AVAPS",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"IPAP min",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"ipap_max",label:"IPAP max",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"0\u20136",t:"ordinal",key:"TEVO_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow cycle sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "VAPS-PC":{mode:"PC/AC - AVAPS",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PC min (above PEEP)",unit:"cmH\u2082O",t:"number",pref:"above_epap",note:"Enter above PEEP"},
+      {id:"ipap_max",label:"PC max (above PEEP)",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"epap",label:"PEEP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"0\u20136",t:"ordinal",key:"TEVO_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+    "VAPS-AE PS":{mode:"AVAPS-AE",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PS min",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PS max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"EPAP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"EPAP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"0\u20136",t:"ordinal",key:"TEVO_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow cycle sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "VAPS-AE PC":{mode:"AVAPS-AE, PC Breath ON",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PC min",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PC max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"PEEP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"PEEP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"0\u20136",t:"ordinal",key:"TEVO_rise"},
+      {id:"trigger",label:"Flow trigger sensitivity",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+  },
+  "Breas Vivo 45LS":{
+    "Pressure Support":{mode:"Pressure Support",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Back up Inspiratory time",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20139",t:"ordinal",key:"Breas_rise"},
+      {id:"trigger",label:"Inspiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_trigger"},
+      {id:"cycle",label:"Expiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_exp_trigger"},
+    ]},
+    "PAC":{mode:"Pressure Control",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20139",t:"ordinal",key:"Breas_rise"},
+      {id:"trigger",label:"Inspiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_trigger"},
+    ]},
+    "VAPS-PS":{mode:"PSV (TgV)",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"Min Pressure",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"ipap_max",label:"Max Pressure",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Back up Inspiratory time",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20139",t:"ordinal",key:"Breas_rise"},
+      {id:"trigger",label:"Inspiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_trigger"},
+      {id:"cycle",label:"Expiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_exp_trigger"},
+    ]},
+    "VAPS-PC":{mode:"PCV (TgV)",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"Min Pressure",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"ipap_max",label:"Max Pressure",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Back up Inspiratory time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20139",t:"ordinal",key:"Breas_rise"},
+      {id:"trigger",label:"Inspiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_trigger"},
+    ]},
+    "VAPS-AE PS":{mode:"PSV (TgV) - AE",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PS min",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PS max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"EPAP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"EPAP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Back up Inspiratory time",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti max",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20139",t:"ordinal",key:"Breas_rise"},
+      {id:"trigger",label:"Inspiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_trigger"},
+      {id:"cycle",label:"Expiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_exp_trigger"},
+    ]},
+    "VAPS-AE PC":{mode:"PCV (TgV) - AE",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PC min",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PC max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"EPAP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"EPAP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise",unit:"1\u20139",t:"ordinal",key:"Breas_rise"},
+      {id:"trigger",label:"Inspiratory Trigger",unit:"1\u20139",t:"ordinal",key:"Breas_trigger"},
+    ]},
+  },
+  "Lowenstein Luisa":{
+    "Pressure Support":{mode:"S/T / Pressure Support",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Ti Timed",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti Min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti Max",unit:"s",t:"number"},
+      {id:"rise",label:"Pressure Increase",unit:"1\u20134",t:"ordinal",key:"Low_rise"},
+      {id:"trigger",label:"Inspiratory Sensitivity",unit:"1\u201310",t:"ordinal",key:"Low_trigger"},
+      {id:"cycle",label:"Expiratory Sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "PAC":{mode:"aPCV",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Ti Timed",unit:"s",t:"number"},
+      {id:"rise",label:"Pressure Increase",unit:"1\u20134",t:"ordinal",key:"Low_rise"},
+      {id:"trigger",label:"Inspiratory Sensitivity",unit:"1\u201310",t:"ordinal",key:"Low_trigger"},
+    ]},
+    "VAPS-PS":{mode:"S/T with target volume / PS with target volume",fields:[
+      {id:"vt",label:"Tidal volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"IPAP min",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"ipap_max",label:"IPAP max",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Ti Timed",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti Min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti Max",unit:"s",t:"number"},
+      {id:"rise",label:"Pressure Increase",unit:"1\u20134",t:"ordinal",key:"Low_rise"},
+      {id:"trigger",label:"Inspiratory Sensitivity",unit:"1\u201310",t:"ordinal",key:"Low_trigger"},
+      {id:"cycle",label:"Expiratory Sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "VAPS-PC":{mode:"aPCV with target volume",fields:[
+      {id:"vt",label:"Tidal volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"IPAP min",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"ipap_max",label:"IPAP max",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Ti Timed",unit:"s",t:"number"},
+      {id:"rise",label:"Pressure Increase",unit:"1\u20134",t:"ordinal",key:"Low_rise"},
+      {id:"trigger",label:"Inspiratory Sensitivity",unit:"1\u201310",t:"ordinal",key:"Low_trigger"},
+    ]},
+    "VAPS-AE PS":{mode:"TTV-VAPS-AE",fields:[
+      {id:"vt",label:"Target volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PS",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PS max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"EPAP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"EPAP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Ti Timed",unit:"s",t:"number"},
+      {id:"ti_min",label:"Ti Min",unit:"s",t:"number"},
+      {id:"ti_max",label:"Ti Max",unit:"s",t:"number"},
+      {id:"rise",label:"Pressure Increase",unit:"1\u20134",t:"ordinal",key:"Low_rise"},
+      {id:"trigger",label:"Inspiratory Sensitivity",unit:"1\u201310",t:"ordinal",key:"Low_trigger"},
+      {id:"cycle",label:"Expiratory Sensitivity",unit:"%",t:"number",pref:"pct"},
+    ]},
+  },
+  "React Health VPro":{
+    "Pressure Support":{mode:"Bilevel",fields:[
+      {id:"pip",label:"IPAP",unit:"cmH\u2082O",t:"number",pref:"absolute"},
+      {id:"epap",label:"EPAP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"ti_max",label:"Time Cycle",unit:"s",t:"number"},
+      {id:"rise",label:"Rise Time",unit:"1\u20136",t:"ordinal",key:"VPro_rise"},
+      {id:"trigger",label:"Flow Trigger",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow Cycle",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "PAC":{mode:"AC-Pressure",fields:[
+      {id:"pip",label:"Pressure Control (above PEEP)",unit:"cmH\u2082O",t:"number",pref:"above_epap",note:"Enter above PEEP"},
+      {id:"epap",label:"PEEP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Respiratory Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise Time",unit:"1\u20136",t:"ordinal",key:"VPro_rise"},
+      {id:"trigger",label:"Flow Trigger",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+    "VAPS-PS":{mode:"PS with target volume",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PS min",unit:"cmH\u2082O",t:"number",pref:"above_epap",note:"Entered above PEEP"},
+      {id:"ipap_max",label:"PS max",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"epap",label:"PEEP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Breath Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"ti_max",label:"Time Cycle",unit:"s",t:"number"},
+      {id:"rise",label:"Rise Time",unit:"1\u20136",t:"ordinal",key:"VPro_rise"},
+      {id:"trigger",label:"Flow Trigger",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow Cycle",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "VAPS-PC":{mode:"PC with target volume",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PC min (above PEEP)",unit:"cmH\u2082O",t:"number",pref:"above_epap",note:"Entered above PEEP"},
+      {id:"ipap_max",label:"PC max (above PEEP)",unit:"cmH\u2082O",t:"number",pref:"above_epap"},
+      {id:"epap",label:"PEEP",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Breath Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise Time",unit:"1\u20136",t:"ordinal",key:"VPro_rise"},
+      {id:"trigger",label:"Flow Trigger",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+    "VAPS-AE PS":{mode:"PS with target volume - Intellipap ON",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PS min",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PS max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"PEEP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"PEEP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Breath Rate",unit:"bpm",t:"number"},
+      {id:"ti_backup",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"ti_max",label:"Time Cycle",unit:"s",t:"number"},
+      {id:"rise",label:"Rise Time",unit:"1\u20136",t:"ordinal",key:"VPro_rise"},
+      {id:"trigger",label:"Flow Trigger",unit:"L/min",t:"number",pref:"lmin"},
+      {id:"cycle",label:"Flow Cycle",unit:"%",t:"number",pref:"pct"},
+    ]},
+    "VAPS-AE PC":{mode:"PC with target volume, Intellipap ON",fields:[
+      {id:"vt",label:"Tidal Volume",unit:"mL",t:"number"},
+      {id:"ipap_min",label:"PC min",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"ipap_max",label:"PC max",unit:"cmH\u2082O",t:"number",pref:"ae_ps"},
+      {id:"epap_min",label:"PEEP min",unit:"cmH\u2082O",t:"number"},
+      {id:"epap_max",label:"PEEP max",unit:"cmH\u2082O",t:"number"},
+      {id:"rr",label:"Breath Rate",unit:"bpm",t:"number"},
+      {id:"ti",label:"Inspiratory Time",unit:"s",t:"number"},
+      {id:"rise",label:"Rise Time",unit:"1\u20136",t:"ordinal",key:"VPro_rise"},
+      {id:"trigger",label:"Flow Trigger",unit:"L/min",t:"number",pref:"lmin"},
+    ]},
+  },
+};
+
+function aePcToPsBridge(note){return{vk:"VAPS-AE PS",match:"bridge",bridges:[{src:"ti",tgt:["ti_min","ti_max"],note:"Fixed Ti \u2192 Ti min = Ti max"},{src:"vt",tgt:["vt"]},{src:"ipap_min",tgt:["ipap_min"]},{src:"ipap_max",tgt:["ipap_max"]},{src:"epap_min",tgt:["epap_min"]},{src:"epap_max",tgt:["epap_max"]},{src:"rr",tgt:["rr"]},{src:"rise",tgt:["rise"]},{src:"trigger",tgt:["trigger"]}],note};}
+
+const COMPAT={
+  "Pressure Support":{"Resmed Aircurve 10 ST (A)":{vk:"Pressure Support",match:"exact"},"Respironics V60":{vk:"Pressure Support",match:"exact"},"Trilogy 100":{vk:"Pressure Support",match:"exact"},"Trilogy EVO/EV300":{vk:"Pressure Support",match:"exact"},"Breas Vivo 45LS":{vk:"Pressure Support",match:"exact"},"Lowenstein Luisa":{vk:"Pressure Support",match:"exact"},"React Health VPro":{vk:"Pressure Support",match:"exact"}},
+  "PAC":{"Resmed Aircurve 10 ST (A)":{vk:"PAC",match:"exact"},"Respironics V60":{vk:"PAC",match:"exact"},"Trilogy 100":{vk:"PAC",match:"exact"},"Trilogy EVO/EV300":{vk:"PAC",match:"exact"},"Breas Vivo 45LS":{vk:"PAC",match:"exact"},"Lowenstein Luisa":{vk:"PAC",match:"exact"},"React Health VPro":{vk:"PAC",match:"exact"}},
+  "VAPS-PS":{"Resmed Aircurve 10 ST (A)":{vk:"VAPS-PS",match:"exact"},"Resmed Astral":{vk:"VAPS-PS",match:"exact"},"Respironics V60":{vk:"VAPS-PS",match:"exact"},"Trilogy 100":{vk:"VAPS-PS",match:"exact"},"Trilogy EVO/EV300":{vk:"VAPS-PS",match:"exact"},"Breas Vivo 45LS":{vk:"VAPS-PS",match:"exact"},"Lowenstein Luisa":{vk:"VAPS-PS",match:"exact"},"React Health VPro":{vk:"VAPS-PS",match:"exact"}},
+  "VAPS-PC":{"Resmed Astral":{vk:"VAPS-PC",match:"exact"},"Trilogy 100":{vk:"VAPS-PC",match:"exact"},"Trilogy EVO/EV300":{vk:"VAPS-PC",match:"exact"},"Breas Vivo 45LS":{vk:"VAPS-PC",match:"exact"},"Lowenstein Luisa":{vk:"VAPS-PC",match:"exact"},"React Health VPro":{vk:"VAPS-PC",match:"exact"}},
+  "VAPS-AE PS":{"Resmed Astral":{vk:"VAPS-AE PS",match:"exact"},"Trilogy 100":{vk:"VAPS-AE PS",match:"exact"},"Trilogy EVO/EV300":{vk:"VAPS-AE PS",match:"exact"},"Breas Vivo 45LS":{vk:"VAPS-AE PS",match:"exact"},"Lowenstein Luisa":{vk:"VAPS-AE PS",match:"exact"},"React Health VPro":{vk:"VAPS-AE PS",match:"exact"}},
+  "VAPS-AE PC":{
+    "Trilogy EVO/EV300":{vk:"VAPS-AE PC",match:"exact"},
+    "React Health VPro":{vk:"VAPS-AE PC",match:"exact"},
+    "Breas Vivo 45LS":{vk:"VAPS-AE PC",match:"exact"},
+    "Resmed Astral":aePcToPsBridge("iVAPS-AE used as best equivalent. Fixed Ti \u2192 Ti min = Ti max. Cycle defaulted to 25%."),
+    "Lowenstein Luisa":aePcToPsBridge("TTV-VAPS-AE used as best equivalent. Fixed Ti \u2192 Ti min = Ti max. Cycle defaulted to 25%."),
+  },
+};
+
+const ALL_DEVICES=["Resmed Aircurve 10 ST (A)","Resmed Astral","Respironics V60","Trilogy 100","Trilogy EVO/EV300","Breas Vivo 45LS","Lowenstein Luisa","React Health VPro"];
+
+const SCALES={
+  V60_rise:[{s:1,v:100},{s:2,v:200},{s:3,v:300},{s:4,v:400},{s:5,v:500}],
+  T100_rise:[{s:1,v:100},{s:2,v:200},{s:3,v:300},{s:4,v:400},{s:5,v:500},{s:6,v:600}],
+  TEVO_rise:[{s:0,v:50},{s:1,v:100},{s:2,v:200},{s:3,v:300},{s:4,v:400},{s:5,v:500},{s:6,v:600}],
+  Breas_rise:[{s:1,v:50},{s:2,v:100},{s:3,v:150},{s:4,v:200},{s:5,v:300},{s:6,v:400},{s:7,v:500},{s:8,v:650},{s:9,v:800}],
+  Low_rise:[{s:1,v:100},{s:2,v:150},{s:3,v:200},{s:4,v:500}],
+  VPro_rise:[{s:1,v:100},{s:2,v:200},{s:3,v:300},{s:4,v:400},{s:5,v:500},{s:6,v:600}],
+  V60_trigger:[{s:1,v:1},{s:2,v:2},{s:3,v:3},{s:4,v:5},{s:5,v:7},{s:6,v:8},{s:7,v:10}],
+  Breas_trigger:[{s:1,v:0.5},{s:2,v:1},{s:3,v:2},{s:4,v:3},{s:5,v:4},{s:6,v:5},{s:7,v:6},{s:8,v:8},{s:9,v:9}],
+  Low_trigger:[{s:1,v:0.5},{s:2,v:1},{s:3,v:2},{s:4,v:3},{s:5,v:4},{s:6,v:5},{s:7,v:6},{s:8,v:8},{s:9,v:9},{s:10,v:10}],
+  ResMed_trigger_verbal:[{s:"very low",v:10},{s:"low",v:8},{s:"med",v:6},{s:"high",v:4},{s:"very high",v:2}],
+  V60_cycle_verbal:[{s:"low",v:10},{s:"med",v:25},{s:"high",v:40}],
+  ResMed_cycle_verbal:[{s:"very low",v:10},{s:"low",v:18},{s:"med",v:25},{s:"high",v:35},{s:"very high",v:50}],
+  Breas_exp_trigger:[{s:1,v:80},{s:2,v:65},{s:3,v:50},{s:4,v:40},{s:5,v:30},{s:6,v:25},{s:7,v:20},{s:8,v:15},{s:9,v:5}],
+};
+
+const VA_MODES={"Resmed Aircurve 10 ST (A)":["VAPS-PS"],"Resmed Astral":["VAPS-PS","VAPS-AE PS"]};
+const TR_MODES={"Resmed Aircurve 10 ST (A)":["VAPS-PS"],"Resmed Astral":["VAPS-PS","VAPS-AE PS"]};
+const usesVa=(d,vk)=>VA_MODES[d]&&VA_MODES[d].includes(vk);
+const usesTR=(d,vk)=>TR_MODES[d]&&TR_MODES[d].includes(vk);
+
+function closest(val,key){let b=null,bd=Infinity;(SCALES[key]||[]).forEach(e=>{const d=Math.abs(e.v-val);if(d<bd){bd=d;b=e;}});return b?{s:b.s,v:b.v,approx:bd>0}:null;}
+function exactV(raw,key){const e=(SCALES[key]||[]).find(x=>String(x.s)===String(raw));return e?e.v:null;}
+function vToVerbal(v,key){let b=null,bd=Infinity;(SCALES[key]||[]).forEach(e=>{const d=Math.abs(e.v-v);if(d<bd){bd=d;b=e;}});return b?{s:b.s,approx:bd>0}:null;}
+function verbalToV(s,key){const e=(SCALES[key]||[]).find(x=>x.s===s);return e?e.v:null;}
+
+function buildOrdinalOptions(f){
+  const sc=SCALES[f.key]||[];
+  if(f.id==="rise"&&ORDINAL_RISE_KEYS.has(f.key)){
+    return sc.map(e=>`<option value="${e.s}">${e.s}</option>`).join("");
+  }
+  if(f.id==="trigger"&&ORDINAL_TRIGGER_KEYS.has(f.key)){
+    return sc.map(e=>`<option value="${e.s}">${e.s} (${e.v} L/min)</option>`).join("");
+  }
+  if(f.id==="cycle"){
+    return sc.map(e=>`<option value="${e.s}">${e.s} (${e.v}%)</option>`).join("");
+  }
+  return sc.map(e=>`<option value="${e.s}">${e.s}</option>`).join("");
+}
+
+function srcToCanon(f,raw,srcEpap){
+  if(f.t==="number"){
+    const v=parseFloat(raw);
+    if(f.pref==="ae_ps")  return{value:v,unit:"cmH\u2082O",pref:"ae_ps"};
+    if(f.pref==="above_epap"&&srcEpap!=null) return{value:v+srcEpap,unit:"cmH\u2082O",pref:"absolute",formula:`${v} + EPAP ${srcEpap} = ${v+srcEpap} cmH\u2082O`};
+    if(f.pref==="absolute") return{value:v,unit:"cmH\u2082O",pref:"absolute"};
+    if(f.pref==="ms")   return{value:v,unit:"ms",pref:"ms"};
+    if(f.pref==="lmin") return{value:v,unit:"L/min",pref:"lmin"};
+    if(f.pref==="pct")  return{value:v,unit:"%",pref:"pct"};
+    return{value:v,unit:f.unit,pref:"num"};
+  }
+  if(f.t==="ordinal"){
+    const v=exactV(raw,f.key);if(v==null)return null;
+    if(f.id==="rise")    return{value:v,unit:"ms",pref:"ms"};
+    if(f.id==="trigger") return{value:v,unit:"L/min",pref:"lmin"};
+    if(f.id==="cycle")   return{value:v,unit:"%",pref:"pct"};
+  }
+  if(f.t==="verbal"){
+    if(f.id==="trigger"){const v=verbalToV(raw,"ResMed_trigger_verbal");return v!=null?{value:v,unit:"L/min",pref:"lmin"}:null;}
+    if(f.id==="cycle"){const k=(f.opts||[]).includes("very low")?"ResMed_cycle_verbal":"V60_cycle_verbal";const v=verbalToV(raw,k);return v!=null?{value:v,unit:"%",pref:"pct"}:null;}
+  }
+  return null;
+}
+
+function canonToTgt(c,tf,tgtEpap){
+  if(!c||c.value==null)return null;
+  if(tf.t==="number"){
+    let val=c.value,formula=null;
+    if(tf.pref==="ae_ps"&&c.pref==="ae_ps")   return{display:String(val),unit:tf.unit,badge:"direct"};
+    if(tf.pref==="ae_ps"&&c.pref==="absolute"&&tgtEpap!=null){val=parseFloat((c.value-tgtEpap).toFixed(1));formula=`${c.value} \u2212 EPAP ${tgtEpap} = ${val} cmH\u2082O`;}
+    if(tf.pref==="above_epap"&&c.pref==="absolute"&&tgtEpap!=null){val=parseFloat((c.value-tgtEpap).toFixed(1));formula=`${c.value} \u2212 EPAP ${tgtEpap} = ${val} cmH\u2082O`;}
+    if(tf.pref==="absolute"&&c.pref==="ae_ps") return{display:String(c.value),unit:tf.unit,badge:"review",formula:"AE PS/PC \u2192 non-AE: verify EPAP offset."};
+    if(tf.pref==="ms"&&c.pref==="ms")          return{display:String(c.value),unit:"ms",badge:"direct"};
+    if(tf.pref==="lmin"&&c.pref==="lmin")      return{display:String(c.value),unit:tf.unit,badge:"direct"};
+    if(tf.pref==="pct"&&c.pref==="pct")        return{display:String(c.value),unit:tf.unit,badge:"direct"};
+    const display=Number.isInteger(val)?String(val):parseFloat(val.toFixed(1)).toString();
+    return{display,unit:tf.unit,badge:formula?"calculated":"direct",formula};
+  }
+  if(tf.t==="ordinal"){
+    if(tf.id==="rise"&&c.pref==="ms"){const r=closest(c.value,tf.key);if(!r)return null;return{display:String(r.s),unit:tf.unit,badge:r.approx?"closest":"exact",sub:r.approx?`approx. ${c.value}ms \u2192 nearest step ${r.s}`:""};}
+    if(tf.id==="trigger"&&c.pref==="lmin"){const r=closest(c.value,tf.key);if(!r)return null;return{display:String(r.s),unit:tf.unit,badge:r.approx?"closest":"exact",sub:r.approx?`${c.value} L/min \u2192 nearest ${r.v} L/min (step ${r.s})`:""};}
+    if(tf.id==="cycle"&&c.pref==="pct"){const r=closest(c.value,tf.key);if(!r)return null;return{display:String(r.s),unit:tf.unit,badge:r.approx?"closest":"exact",sub:r.approx?`wanted ${c.value}% \u2192 nearest ${r.v}%`:""};}
+  }
+  if(tf.t==="verbal"){
+    if(tf.id==="trigger"&&c.pref==="lmin"){const r=vToVerbal(c.value,"ResMed_trigger_verbal");if(!r)return null;return{display:r.s,unit:"",badge:r.approx?"closest":"exact",sub:r.approx?`${c.value} L/min \u2192 ${r.s}`:""};}
+    if(tf.id==="cycle"&&c.pref==="pct"){const k=(tf.opts||[]).includes("very low")?"ResMed_cycle_verbal":"V60_cycle_verbal";const r=vToVerbal(c.value,k);if(!r)return null;return{display:r.s,unit:"",badge:r.approx?"closest":"exact"};}
+  }
+  return null;
+}
+
+function getEl(id){const e=document.getElementById("f_"+id);return e?e.value:"";}
+
+function onSrcDev(){
+  const dev=document.getElementById("srcDev").value;
+  const sel=document.getElementById("srcMode");
+  sel.innerHTML='<option value="">Select mode...</option>';
+  if(dev&&DEV_MODES[dev])Object.keys(DEV_MODES[dev]).forEach(vk=>{const o=document.createElement("option");o.value=vk;o.textContent=DEV_MODES[dev][vk].mode;sel.appendChild(o);});
+  document.getElementById("srcFields").innerHTML="";
+  document.getElementById("output").innerHTML="";
+  refreshTgtDevList();
+}
+function onSrcMode(){
+  const dev=document.getElementById("srcDev").value,vk=document.getElementById("srcMode").value;
+  const wrap=document.getElementById("srcFields");wrap.innerHTML="";
+  if(!dev||!vk||!DEV_MODES[dev]||!DEV_MODES[dev][vk])return;
+  DEV_MODES[dev][vk].fields.forEach(f=>{
+    let inp="";
+    if(f.t==="ordinal"){inp=`<select id="f_${f.id}"><option value="">\u2014</option>${buildOrdinalOptions(f)}</select>`;}
+    else if(f.t==="verbal"){inp=`<select id="f_${f.id}"><option value="">\u2014</option>${(f.opts||[]).map(o=>`<option>${o}</option>`).join("")}</select>`;}
+    else{inp=`<input id="f_${f.id}" type="number" step="any" placeholder="enter value">`;}
+    wrap.innerHTML+=`<div class="field"><label for="f_${f.id}">${f.label}${f.unit?` <span style="color:var(--text-muted);font-size:12px">(${f.unit})</span>`:""}${f.note?` <span style="color:var(--text-warning);font-size:11px">\u2014 ${f.note}</span>`:""}</label>${inp}</div>`;
+  });
+  document.getElementById("output").innerHTML="";
+  refreshTgtDevList();
+}
+function onTgtDev(){updateTgtMode();}
+function refreshTgtDevList(){
+  const srcDev=document.getElementById("srcDev").value,vk=document.getElementById("srcMode").value;
+  const tgtSel=document.getElementById("tgtDev");const prev=tgtSel.value;tgtSel.innerHTML="";
+  if(!vk){tgtSel.innerHTML='<option value="">Select a source mode first...</option>';updateTgtMode();return;}
+  const cmap=COMPAT[vk]||{};
+  const ph=document.createElement("option");ph.value="";ph.textContent="Select target device...";tgtSel.appendChild(ph);
+  let added=0;
+  ALL_DEVICES.forEach(dev=>{
+    if(dev===srcDev)return;
+    if(cmap[dev]){const o=document.createElement("option");o.value=dev;o.textContent=dev+(cmap[dev].match==="bridge"?" (with bridging)":"");tgtSel.appendChild(o);added++;}
+  });
+  if(added===0)tgtSel.innerHTML='<option value="">No compatible target devices</option>';
+  else if(prev)tgtSel.value=prev;
+  updateTgtMode();
+}
+function updateTgtMode(){
+  const vk=document.getElementById("srcMode").value,tgtDev=document.getElementById("tgtDev").value;
+  const el=document.getElementById("tgtModeDisplay"),note=document.getElementById("tgtCompatNote");
+  if(!vk||!tgtDev||!COMPAT[vk]||!COMPAT[vk][tgtDev]){el.textContent="\u2014 select devices and translate \u2014";el.style.color="var(--text-muted)";el.style.fontWeight="";note.textContent="";return;}
+  const compat=COMPAT[vk][tgtDev];
+  el.textContent=(DEV_MODES[tgtDev][compat.vk]&&DEV_MODES[tgtDev][compat.vk].mode)||"";el.style.fontWeight="500";
+  if(compat.match==="bridge"){el.style.color="var(--text-pro)";note.textContent="Parameter bridging applied";}
+  else{el.style.color="var(--text-success)";note.textContent="";}
+}
+
+function doTranslate(){
+  const srcDev=document.getElementById("srcDev").value,vk=document.getElementById("srcMode").value,tgtDev=document.getElementById("tgtDev").value;
+  const out=document.getElementById("output");
+  if(!srcDev||!vk||!tgtDev){out.innerHTML='<div class="card"><p class="empty">Please select source device, mode, and target device.</p></div>';return;}
+  if(!COMPAT[vk]||!COMPAT[vk][tgtDev]){out.innerHTML='<div class="card"><p class="empty">No compatible mode for this combination.</p></div>';return;}
+  const compat=COMPAT[vk][tgtDev];
+  const tgtVk=compat.vk;
+  const tgtConfig=DEV_MODES[tgtDev][tgtVk];
+  const srcFields=DEV_MODES[srcDev][vk].fields;
+  const tgtFields=tgtConfig.fields;
+  const isBridge=compat.match==="bridge";
+  const srcEpapRaw=getEl("epap")||getEl("epap_min");
+  const srcEpap=srcEpapRaw?parseFloat(srcEpapRaw):null;
+  const tgtEpap=srcEpap;
+  const canon={};
+  srcFields.forEach(f=>{const raw=getEl(f.id);if(!raw)return;const c=srcToCanon(f,raw,srcEpap);if(c)canon[f.id]=c;});
+  const srcHasCycle=srcFields.some(f=>f.id==="cycle");
+  const srcIsTimeCycled=NO_CYCLE_MODES.includes(vk)||!srcHasCycle;
+  const srcHasTiMin=srcFields.some(f=>f.id==="ti_min");
+  const srcHasTiMax=srcFields.some(f=>f.id==="ti_max");
+  const srcHasSingleTi=srcFields.some(f=>SINGLE_TI_IDS.has(f.id));
+  const tgtNeedsSingleTi=tgtFields.some(f=>SINGLE_TI_IDS.has(f.id));
+  const tgtNeedsTiMin=tgtFields.some(f=>f.id==="ti_min");
+  const tgtNeedsTiMax=tgtFields.some(f=>f.id==="ti_max");
+  const srcIsTR=usesTR(srcDev,vk);
+  const rawRR=canon.rr?canon.rr.value:null;
+  const patientRRForTi=rawRR?(srcIsTR?rawRR-2:rawRR):null;
+  const tiCalcNotes=[];
+  if(srcHasTiMin&&srcHasTiMax&&!srcHasSingleTi&&tgtNeedsSingleTi&&patientRRForTi){
+    const ct=calcTiFromRR(patientRRForTi);
+    const fm=`Ti = (60 \u00f7 ${patientRRForTi} \u00f7 3) = ${ct}s (1:2 I:E from backup rate)`;
+    tgtFields.filter(f=>SINGLE_TI_IDS.has(f.id)).forEach(tf=>{if(!canon[tf.id])canon[tf.id]={value:ct,unit:"s",pref:"num",derived:true,formula:fm};});
+    tiCalcNotes.push(fm);
+  }
+  let stiVal=null;
+  if(srcHasSingleTi){const sf=srcFields.find(f=>SINGLE_TI_IDS.has(f.id));if(sf&&canon[sf.id])stiVal=canon[sf.id].value;}
+  if(!stiVal&&patientRRForTi)stiVal=calcTiFromRR(patientRRForTi);
+  if(stiVal){
+    if(tgtNeedsTiMin&&!canon.ti_min){const v=Math.max(0.1,Math.round((stiVal-0.2)*10)/10);const fm=`Ti min = ${stiVal} \u2212 0.2 = ${v}s`;canon.ti_min={value:v,unit:"s",pref:"num",derived:true,formula:fm};tiCalcNotes.push(fm);}
+    if(tgtNeedsTiMax&&!canon.ti_max){const v=Math.round((stiVal+0.6)*10)/10;const fm=`Ti max = ${stiVal} + 0.6 = ${v}s`;canon.ti_max={value:v,unit:"s",pref:"num",derived:true,formula:fm};tiCalcNotes.push(fm);}
+  }
+  const srcIsVa=usesVa(srcDev,vk),tgtIsVa=usesVa(tgtDev,tgtVk);
+  let patientRR=rawRR?(srcIsTR?rawRR-2:rawRR):null;
+  if(srcIsVa&&!tgtIsVa&&canon.target_va&&patientRR!=null){
+    const tr=srcIsTR?rawRR:patientRR+2;
+    const vt=Math.round((canon.target_va.value/tr*1000)+150);
+    canon.vt={value:vt,unit:"mL",pref:"num",derived:true,formula:`VT = (${canon.target_va.value} \u00f7 ${tr} \u00d7 1000) + 150 = ${vt} mL`};
+    if(canon.rr)canon.rr={value:patientRR,unit:"bpm",pref:"num",derived:true,formula:`RR = Target Rate ${rawRR} \u2212 2 = ${patientRR} bpm`};
+  }
+  if(!srcIsVa&&tgtIsVa&&canon.vt&&patientRR!=null){
+    const tr=patientRR+2;
+    const va=parseFloat(((canon.vt.value-150)*tr/1000).toFixed(2));
+    canon.target_va={value:va,unit:"L/min",pref:"num",derived:true,formula:`Va = (${canon.vt.value} \u2212 150) \u00d7 ${tr} \u00f7 1000 = ${va} L/min`};
+    if(canon.rr)canon.rr={value:tr,unit:"bpm",pref:"num",derived:true,formula:`Target Rate = RR ${patientRR} + 2 = ${tr} bpm`};
+  }
+  const bridgeMap={};
+  if(isBridge&&compat.bridges){compat.bridges.forEach(b=>{const c=canon[b.src];if(!c)return;b.tgt.forEach(tid=>{bridgeMap[tid]=Object.assign({},c,{bridgeNote:b.note||null});});});}
+  const derivations=[];
+  Object.values(canon).forEach(c=>{if(c&&c.formula&&!tiCalcNotes.includes(c.formula))derivations.push(c.formula);});
+  tiCalcNotes.forEach(n=>{if(!derivations.includes(n))derivations.push(n);});
+  const bridgeNotes=[];
+  let cycleDefaulted=false;
+  let rows="";
+  tgtFields.forEach(tf=>{
+    const isBridgedField=isBridge&&bridgeMap[tf.id]!==undefined;
+    let c=isBridgedField?bridgeMap[tf.id]:canon[tf.id];
+    if(tf.id==="cycle"&&!c&&srcIsTimeCycled){c={value:CYCLE_DEFAULT_PCT,unit:"%",pref:"pct",isDefault:true};cycleDefaulted=true;}
+    if(isBridgedField&&bridgeMap[tf.id]&&bridgeMap[tf.id].bridgeNote&&!bridgeNotes.includes(bridgeMap[tf.id].bridgeNote))bridgeNotes.push(bridgeMap[tf.id].bridgeNote);
+    let valHTML="",badgeHTML="",subHTML="";
+    if(!c||c.value==null){valHTML='<span style="color:var(--text-muted)">\u2014</span>';badgeHTML='<span class="badge bw">not entered</span>';}
+    else{
+      const r=canonToTgt(c,tf,tgtEpap);
+      if(!r){valHTML='<span style="color:var(--text-muted)">\u2014</span>';badgeHTML='<span class="badge bw">no match</span>';}
+      else{
+        valHTML=`<strong>${r.display}</strong>${r.unit?` <span style="color:var(--text-muted);font-size:12px">${r.unit}</span>`:""}`;
+        const isDefault=c.isDefault,derived=c.derived||r.badge==="calculated",bridgePurple=isBridgedField&&!derived&&!isDefault,isReview=r.badge==="review";
+        let bc,bl;
+        if(isDefault){bc="bw";bl="default \u26a0";}
+        else if(isReview){bc="bw";bl="review \u26a0";}
+        else if(derived){bc="bp";bl="calculated";}
+        else if(bridgePurple){bc="bp";bl="bridged";}
+        else if(r.badge==="direct"||r.badge==="exact"){bc="bd";bl=r.badge;}
+        else if(r.badge==="closest"){bc="bc";bl="closest";}
+        else{bc="bw";bl=r.badge;}
+        badgeHTML=`<span class="badge ${bc}">${bl}</span>`;
+        if(r.sub)subHTML=`<div class="rval-sub">${r.sub}</div>`;
+        if(r.formula&&!derivations.includes(r.formula))derivations.push(r.formula);
+      }
+    }
+    rows+=`<div class="rrow"><div class="rkey">${tf.label}${tf.unit?` <span style="color:var(--text-muted);font-size:11px">(${tf.unit})</span>`:""}${tf.note?`<div class="rkey-sub">${tf.note}</div>`:""}</div><div class="rval">${valHTML}${badgeHTML}${subHTML}</div></div>`;
+  });
+  const uniq=[...new Set(derivations)];
+  const calcBox=uniq.length?`<div class="calcbox"><strong>Calculations performed:</strong><br>${uniq.map(d=>"\u2022 "+d).join("<br>")}</div>`:"";
+  const bridgeBox=(isBridge&&(bridgeNotes.length||compat.note))?`<div class="bridgebox"><strong>Parameter bridging:</strong><br>${bridgeNotes.map(n=>"\u2022 "+n).join("<br>")}${compat.note?"<br><br>"+compat.note:""}</div>`:"";
+  const warnBox=cycleDefaulted?`<div class="warnbox">\u26a0 <strong>Cycle sensitivity defaulted:</strong> ${CYCLE_DEFAULT_MSG}</div>`:"";
+  const pillClass=isBridge?"mpill-bridge":"mpill";
+  out.innerHTML=`<div class="card">
+    <div style="margin-bottom:12px"><div class="slabel" style="margin-bottom:4px">Mode on ${tgtDev}</div><span class="${pillClass}">${tgtConfig.mode}</span>${isBridge?' <span style="font-size:12px;color:var(--text-pro);margin-left:8px">parameter bridging</span>':""}</div>
+    <div style="border-top:0.5px solid var(--border);padding-top:10px"><div class="slabel" style="margin-bottom:6px">Translated settings</div>${rows}</div>
+    ${calcBox}${bridgeBox}${warnBox}
+    <p class="disc">Purple = calculated or bridged. Blue = closest step. \u26a0 = default or review needed. Always verify clinically.</p>
+  </div>`;
+}
+</script>
+</body>
+</html>
